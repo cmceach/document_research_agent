@@ -1,0 +1,20 @@
+from setuptools import setup, find_packages
+
+setup(
+    name="document_research",
+    version="0.1.0",
+    packages=find_packages(),
+    install_requires=[
+        "langchain>=0.1.8",
+        "langgraph>=0.3.21",
+        "openai>=1.15.0",
+        "chromadb>=0.4.24",
+        "sentence-transformers>=2.5.1",
+        "python-dotenv>=1.0.1",
+        "tiktoken>=0.6.0",
+        "tenacity>=8.2.3",
+        "pydantic>=2.6.4",
+        "pytest>=8.0.0"
+    ],
+    python_requires=">=3.9",
+) 

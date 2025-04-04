@@ -1,10 +1,9 @@
-# Python
+# Python related
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-env/
 build/
 develop-eggs/
 dist/
@@ -16,30 +15,36 @@ lib64/
 parts/
 sdist/
 var/
+wheels/
 *.egg-info/
 .installed.cfg
 *.egg
 
-# Virtual Environment
+# Virtual environment
 venv/
-ENV/
 env/
+ENV/
 
-# IDE specific files
+# IDE related
 .idea/
 .vscode/
 *.swp
 *.swo
 
-# OS specific files
+# Project specific
+.env
+chroma_db/
+*.xlsx
+document_research_report_*.md
+
+# Logs
+*.log
+
+# OS generated files
 .DS_Store
 .DS_Store?
 ._*
 .Spotlight-V100
 .Trashes
 ehthumbs.db
-Thumbs.db
-
-# Project specific
-*.log
-.env 
+Thumbs.db 
