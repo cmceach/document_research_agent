@@ -116,18 +116,7 @@ The Document Research Agent helps users query and analyze collections of PDF doc
 
 The following diagram shows the LangGraph workflow of the Document Research Agent:
 
-```mermaid
-graph TD
-    __start__ --> start
-    start --> generate_search_queries
-    generate_search_queries --> retrieve_context
-    retrieve_context --> grade_context
-    grade_context -.-> generate_search_queries
-    grade_context --> generate_final_answer
-    grade_context --> handle_failure
-    generate_final_answer --> __end__
-    handle_failure --> __end__
-```
+![Document Research Agent Workflow](diagrams/workflow_visualization.png)
 
 This workflow represents:
 1. **Start**: Initialize the agent state
