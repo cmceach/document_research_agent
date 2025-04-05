@@ -11,6 +11,18 @@ The Document Research Agent helps users query and analyze collections of PDF doc
 3. Query documents using natural language questions
 4. Generate detailed responses based on the document content
 
+## Workflow
+
+The agent operates as a state machine orchestrated by LangGraph:
+
+![Document Research Agent Workflow](diagrams/workflow.png)
+
+1. **Generate Search Queries**: LLM analyzes the original query and existing context to generate targeted search queries
+2. **Retrieve Context**: Perform vector search with ChromaDB, filtering by specified document filenames
+3. **Grade Context**: Evaluate if retrieved context is sufficient to answer the original query
+4. **Generate Answer**: Synthesize answer using only retrieved context with accurate citations
+5. **Format Output**: Structure the answer and citations into the final response
+
 ## Architecture
 
 - **ChromaDB**: Vector database for storing and retrieving document embeddings
