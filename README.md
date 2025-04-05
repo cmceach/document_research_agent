@@ -116,7 +116,30 @@ The Document Research Agent helps users query and analyze collections of PDF doc
 
 The following diagram shows the LangGraph workflow of the Document Research Agent:
 
-![Document Research Agent Workflow](workflow_visualization.png)
+```mermaid
+graph TD
+    __start__ --> start
+    start --> generate_search_queries
+    generate_search_queries --> retrieve_context
+    retrieve_context --> grade_context
+    grade_context -.-> generate_search_queries
+    grade_context --> generate_final_answer
+    grade_context --> handle_failure
+    generate_final_answer --> __end__
+    handle_failure --> __end__
+```
+
+This workflow represents:
+1. **Start**: Initialize the agent state
+2. **Generate Search Queries**: Create semantic search queries based on the user's question
+3. **Retrieve Context**: Search the document embeddings for relevant context
+4. **Grade Context**: Evaluate if we have enough context to answer
+   - If more context needed: Return to generate new queries
+   - If sufficient context: Generate final answer
+   - If no relevant context found: Handle failure
+5. **Generate Final Answer/Handle Failure**: Produce the final response
+
+The actual implementation can be found in `src/graph_builder.py`.
 
 ## Document Ingestion
 
