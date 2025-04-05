@@ -41,7 +41,7 @@ The ingestion script:
 ## Architecture
 
 - **ChromaDB**: Vector database for storing and retrieving document embeddings
-- **LangChain**: Framework for building language model applications
+- **LangChain**: Framework for building language model applications, with structured output support
 - **LangGraph**: Flow control for conversational agents
 - **OpenAI**: LLM API for natural language processing
 
@@ -51,6 +51,7 @@ The ingestion script:
 - **Semantic Search**: Retrieves the most relevant document sections based on natural language queries
 - **Context-Aware Responses**: Generates responses that consider the document context
 - **Command-Line Interface**: Simple CLI for interacting with the agent
+- **Structured Output with LangChain**: Uses LangChain's structured output capabilities for reliable response formatting
 
 ## Installation
 
@@ -83,6 +84,39 @@ cp .env.template .env
 
 ```bash
 python -m src.main "What are the key provisions in this contract?" --filenames path/to/document.pdf
+```
+
+### Using the Agent in Python Code
+
+```python
+from src.agent import DocumentResearchAgent
+
+# Initialize the agent
+agent = DocumentResearchAgent()
+
+# Run a query
+result = agent.run("What are the key provisions in this contract?", filenames=["path/to/document.pdf"])
+
+# Access the results
+print(result["final_answer"])
+for citation in result["citations"]:
+    print(f"- {citation['filename']}, Page {citation['page']}: '{citation['text']}'")
+```
+
+### Switching LLM Implementations
+
+The Document Research Agent supports two LLM implementations:
+1. The original OpenAI implementation
+2. The LangChain implementation with structured output
+
+Use the provided script to switch between implementations:
+
+```bash
+# Switch to the LangChain implementation
+./switch_llm_implementation.py langchain
+
+# Switch to the original OpenAI implementation
+./switch_llm_implementation.py openai
 ```
 
 ### Check Collection Status
