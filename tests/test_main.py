@@ -107,7 +107,8 @@ def test_main_with_check_collection(mock_parse_args, mock_build_graph, mock_chec
 @patch('src.main.check_collection_status')
 @patch('src.main.build_graph')
 @patch('src.main.parse_arguments')
-def test_main_normal_run(mock_parse_args, mock_build_graph, mock_check_collection):
+@patch('src.llm_calls.llm_wrappers.LLMWrappers')
+def test_main_normal_run(mock_llm_wrappers, mock_parse_args, mock_build_graph, mock_check_collection):
     """Test the main function for normal agent execution."""
     # Setup mock args
     mock_args = MagicMock()
@@ -117,6 +118,10 @@ def test_main_normal_run(mock_parse_args, mock_build_graph, mock_check_collectio
     mock_args.verbose = True
     mock_args.output = None
     mock_parse_args.return_value = mock_args
+    
+    # Mock LLMWrappers
+    mock_llm = MagicMock()
+    mock_llm_wrappers.return_value = mock_llm
     
     # Mock graph
     mock_graph = MagicMock()
@@ -134,7 +139,13 @@ def test_main_normal_run(mock_parse_args, mock_build_graph, mock_check_collectio
     mock_parse_args.assert_called_once()
     mock_check_collection.assert_not_called()
     mock_build_graph.assert_called_once()
-    mock_graph.invoke.assert_called_once_with({
-        "original_query": "test query",
-        "filenames": ["file1.pdf"]
-    }) 
+    
+    # Verify graph was called with correct state including llm_wrapper
+    mock_graph.invoke.assert_called_once()
+    call_args = mock_graph.invoke.call_args[0][0]
+    assert "original_query" in call_args
+    assert "filenames" in call_args
+    assert "llm_wrapper" in call_args
+    assert call_args["original_query"] == "test query"
+    assert call_args["filenames"] == ["file1.pdf"]
+    assert call_args["llm_wrapper"] == mock_llm 

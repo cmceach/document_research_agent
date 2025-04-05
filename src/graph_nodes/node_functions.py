@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 
 # Use lazy initialization for clients to make testing easier
 retriever = ChromaRetriever(lazy_init=True)
-llm_wrapper = LLMWrappers(lazy_init=True)
 
 def start_node_func(state: AgentState) -> Dict[str, Any]:
     """Initialize the agent state with default values."""
@@ -35,8 +34,8 @@ def generate_search_queries_node_func(state: AgentState) -> Dict[str, Any]:
     """Generate search queries based on the original query and current context."""
     logger.info(f"Generating search queries. Iteration: {state['iterations']}, Generation attempt: {state['generation_attempts']}")
     
-    # Generate search queries
-    queries = llm_wrapper.generate_search_queries_llm(
+    # Generate search queries using the agent's LLM wrapper
+    queries = state["llm_wrapper"].generate_search_queries_llm(
         original_query=state["original_query"],
         retrieved_context=state["retrieved_context"],
         previous_queries=state["search_queries"],
@@ -88,8 +87,8 @@ def grade_context_node_func(state: AgentState) -> Dict[str, Any]:
     """Evaluate if the context is sufficient to answer the query."""
     logger.info(f"Grading context. Iteration: {state['iterations']}")
     
-    # Grade the context
-    decision = llm_wrapper.grade_context_llm(
+    # Grade the context using the agent's LLM wrapper
+    decision = state["llm_wrapper"].grade_context_llm(
         original_query=state["original_query"],
         retrieved_context=state["retrieved_context"],
         iterations=state["iterations"],
@@ -117,8 +116,8 @@ def generate_final_answer_node_func(state: AgentState) -> Dict[str, Any]:
     """Generate the final answer based on the retrieved context."""
     logger.info("Generating final answer")
     
-    # Generate the answer
-    answer, citations = llm_wrapper.generate_final_answer_llm(
+    # Generate the answer using the agent's LLM wrapper
+    answer, citations = state["llm_wrapper"].generate_final_answer_llm(
         original_query=state["original_query"],
         retrieved_context=state["retrieved_context"]
     )

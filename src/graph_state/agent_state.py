@@ -1,5 +1,6 @@
 from typing import Dict, List, Optional, TypedDict, Any, Annotated
 import operator
+from src.llm_calls.llm_wrappers import LLMWrappers
 
 class AgentState(TypedDict):
     """State for the Document Research Agent."""
@@ -7,6 +8,7 @@ class AgentState(TypedDict):
     # Input parameters
     original_query: str
     filenames: List[str]
+    llm_wrapper: LLMWrappers  # LLM wrapper instance for token tracking
     
     # Iteration tracking
     iterations: int

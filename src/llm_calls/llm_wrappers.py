@@ -105,7 +105,7 @@ class LLMWrappers:
             A structured LLM with the specified schema
         """
         self._ensure_models_initialized()
-        return self.chat_model.with_structured_output(model_class)
+        return self.chat_model.with_structured_output(model_class, method="function_calling")
     
     def _create_messages(self, system_prompt: str, user_prompt: str) -> List[Dict[str, str]]:
         """
@@ -318,6 +318,10 @@ Based on the above, determine if we should:
         Returns:
             Tuple containing the answer string and a list of citation dictionaries
         """
+        # If no context is provided, return early
+        if not retrieved_context:
+            return "Information not found in provided documents", []
+            
         try:
             # Create structured LLM
             structured_llm = self._get_structured_llm(FinalAnswer)
@@ -365,6 +369,10 @@ Based ONLY on the context provided above, answer the question. Include relevant 
                     "total_tokens": cb.total_tokens
                 })
                 logger.debug(f"Final answer generation used {cb.total_tokens} tokens")
+            
+            # If the answer indicates no information was found, return empty citations
+            if result.answer == "Information not found in provided documents":
+                return result.answer, []
             
             # Process the citations to ensure they match the format expected by the agent
             processed_citations = [

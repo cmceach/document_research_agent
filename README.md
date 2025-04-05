@@ -1,6 +1,107 @@
 # Document Research Agent
 
-A tool for natural language querying of PDF documents using ChromaDB vector embeddings and LangChain for conversational AI.
+An intelligent agent that can research and answer questions about your documents using LLMs and semantic search.
+
+## Directory Structure
+
+```
+document_research/
+├── src/                    # Main source code
+│   ├── agent.py           # Main agent class
+│   ├── graph_builder.py   # Graph construction logic
+│   ├── graph_nodes/       # Node function implementations
+│   ├── graph_state/       # State management
+│   ├── llm_calls/         # LLM integration
+│   └── retriever/         # Document retrieval
+├── tests/                 # Test files
+├── scripts/               # Utility scripts
+│   ├── ingest_documents.py
+│   ├── create_sample_docs.py
+│   ├── generate_sample_report.py
+│   └── update_evaluation.py
+├── docs/                  # Documentation
+│   ├── prd.md            # Product Requirements Document
+│   ├── todo.md           # Development TODOs
+│   └── EVALUATION_README.md
+├── examples/             # Example code and usage
+├── evaluation/          # Evaluation data and reports
+│   ├── document_evaluation.py
+│   ├── document_research_evaluation.xlsx
+│   └── document_research_report_*.md
+├── tools/               # Development tools
+│   └── generate_graph_visualization.py
+├── diagrams/           # Visual documentation
+│   └── workflow_visualization.png
+├── test_data/         # Test document files
+├── chroma_db/         # Vector database storage
+├── requirements.txt   # Python dependencies
+├── setup.py          # Package configuration
+├── pytest.ini        # Test configuration
+├── .env.template     # Environment variable template
+└── .gitignore       # Git ignore rules
+```
+
+## Installation
+
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/document_research.git
+cd document_research
+```
+
+2. Create and activate a virtual environment:
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+3. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+4. Copy `.env.template` to `.env` and fill in your API keys and configuration:
+```bash
+cp .env.template .env
+```
+
+## Usage
+
+1. Ingest your documents:
+```bash
+python scripts/ingest_documents.py path/to/your/documents/*.pdf
+```
+
+2. Run a query:
+```python
+from src.agent import DocumentResearchAgent
+
+agent = DocumentResearchAgent()
+result = agent.run(
+    query="What is the main topic of the documents?",
+    filenames=["doc1.pdf", "doc2.pdf"]
+)
+print(result["final_answer"])
+```
+
+## Development
+
+- Run tests: `python -m pytest`
+- Generate documentation: `python tools/generate_graph_visualization.py`
+- Create sample documents: `python scripts/create_sample_docs.py`
+- Run evaluations: `python evaluation/document_evaluation.py`
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Run tests and linting
+5. Submit a pull request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## Overview
 
@@ -54,31 +155,6 @@ The ingestion script:
 - **Structured Output with LangChain**: Uses LangChain's structured output capabilities for reliable response formatting
 - **Robust Error Handling**: Comprehensive error handling and detailed status reporting
 - **Configurable Parameters**: Adjustable maximum iterations and other runtime parameters
-
-## Installation
-
-1. Clone the repository:
-```bash
-git clone https://github.com/your-username/document_research_agent.git
-cd document_research_agent
-```
-
-2. Create a virtual environment:
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
-3. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-4. Set up environment variables by copying the template and adding your API keys:
-```bash
-cp .env.template .env
-# Edit .env file with your OpenAI API key and other settings
-```
 
 ## Usage
 
@@ -169,12 +245,4 @@ The `test_documents.py` script automates testing across different document types
 
 # Run a specific query
 ./test_documents.py --query-index 2
-```
-
-## License
-
-MIT
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request. 
+``` 

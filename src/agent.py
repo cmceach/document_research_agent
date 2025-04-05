@@ -177,7 +177,8 @@ class DocumentResearchAgent:
             # Prepare the input state
             input_state = {
                 "original_query": query,
-                "filenames": filenames or []
+                "filenames": filenames or [],
+                "llm_wrapper": self.llm_wrapper  # Add LLMWrappers instance to state
             }
             
             # Add optional max_iterations if provided
