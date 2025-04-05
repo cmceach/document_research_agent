@@ -17,6 +17,27 @@ The following diagram shows the LangGraph workflow of the Document Research Agen
 
 ![Document Research Agent Workflow](workflow_visualization.png)
 
+## Document Ingestion
+
+Before using the Document Research Agent, you need to ingest documents into the ChromaDB vector database:
+
+```bash
+# Install required packages
+pip install PyPDF2
+
+# Run the ingestion script (default path is test_data/)
+python ingest_documents.py
+
+# Ingest documents from a specific directory
+python ingest_documents.py --directory path/to/your/pdfs
+```
+
+The ingestion script:
+- Extracts text from PDF files
+- Splits documents into chunks
+- Creates embeddings using OpenAI's embedding model
+- Stores documents and embeddings in ChromaDB
+
 ## Architecture
 
 - **ChromaDB**: Vector database for storing and retrieving document embeddings
