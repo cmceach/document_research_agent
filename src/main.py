@@ -5,8 +5,7 @@ import logging
 from dotenv import load_dotenv
 from typing import List, Dict, Any
 
-from src.graph_builder import build_graph
-from src.retriever.chroma_retriever import ChromaRetriever
+from src.agent import DocumentResearchAgent
 
 # Load environment variables
 load_dotenv()
@@ -57,14 +56,20 @@ def parse_arguments():
         help='Check collection status before processing'
     )
     
+    parser.add_argument(
+        '--max-iterations',
+        type=int,
+        default=None,
+        help='Maximum number of iterations for the agent (optional)'
+    )
+    
+    parser.add_argument(
+        '--debug-retrieval',
+        action='store_true',
+        help='Enable detailed debugging for document retrieval'
+    )
+    
     return parser.parse_args()
-
-def format_output(final_state: Dict[str, Any]) -> Dict[str, Any]:
-    """Format the final state into the expected output format."""
-    return {
-        "answer": final_state.get("final_answer", "No answer generated"),
-        "citations": final_state.get("citations", [])
-    }
 
 def print_result(result: Dict[str, Any], verbose: bool = False):
     """Pretty print the result to the console."""
@@ -72,16 +77,34 @@ def print_result(result: Dict[str, Any], verbose: bool = False):
     print("DOCUMENT RESEARCH AGENT RESULT")
     print("="*80)
     
+    # Print status
+    if not result.get("success", True):
+        print("\nSTATUS: FAILED")
+        print(f"Error: {result.get('error', 'Unknown error')}")
+    else:
+        print("\nSTATUS: SUCCESS")
+        if "iterations" in result:
+            print(f"Iterations: {result['iterations']}")
+    
     print("\nANSWER:")
-    print(result["answer"])
+    print(result.get("final_answer", "No answer generated"))
     
     print("\nCITATIONS:")
-    if result["citations"]:
-        for i, citation in enumerate(result["citations"]):
+    citations = result.get("citations", [])
+    if citations:
+        for i, citation in enumerate(citations):
             print(f"\n[{i+1}] Source: {citation.get('filename', 'unknown')}, Page: {citation.get('page', 0)}")
             print(f"Text: {citation.get('text', '')}")
     else:
         print("No citations provided.")
+    
+    # Print token usage information if available
+    if "token_usage" in result:
+        token_usage = result["token_usage"]
+        print("\nTOKEN USAGE:")
+        print(f"- Prompt tokens: {token_usage.get('prompt_tokens', 0)}")
+        print(f"- Completion tokens: {token_usage.get('completion_tokens', 0)}")
+        print(f"- Total tokens: {token_usage.get('total_tokens', 0)}")
     
     if verbose and "agent_scratchpad" in result:
         print("\n" + "="*80)
@@ -100,93 +123,67 @@ def save_to_file(result: Dict[str, Any], filepath: str):
     except Exception as e:
         logger.error(f"Error saving result to file: {e}")
 
-def check_environment():
-    """Check if all required environment variables are set."""
-    required_vars = [
-        "OPENAI_API_KEY",
-        "CHROMA_DB_PATH",
-        "CHROMA_COLLECTION_NAME",
-        "OPENAI_EMBEDDING_MODEL_NAME"
-    ]
+def check_document_availability(filenames: List[str]) -> bool:
+    """Check if the specified documents exist in the test_data directory."""
+    test_data_dir = "test_data"
+    all_found = True
     
-    missing = [var for var in required_vars if not os.environ.get(var)]
+    for filename in filenames:
+        # Check if the file exists in test_data directory
+        file_path = os.path.join(test_data_dir, filename)
+        if not os.path.exists(file_path):
+            logger.warning(f"Document not found in test_data directory: {filename}")
+            all_found = False
     
-    if missing:
-        logger.error(f"Missing required environment variables: {', '.join(missing)}")
-        logger.error("Please set these variables in your .env file or environment.")
-        return False
-    
-    return True
-
-def check_collection_status(filenames: List[str]) -> bool:
-    """Check if the Chroma DB collection exists and has documents for the specified filenames."""
-    try:
-        # Initialize the retriever
-        retriever = ChromaRetriever()
-        
-        # Get collection statistics
-        stats = retriever.get_collection_stats()
-        
-        if stats["document_count"] == 0:
-            logger.error("Collection exists but contains no documents.")
-            return False
-        
-        # Test retrieval with a basic query to check for any documents with the specified filenames
-        test_query = "test query"  # Not important, just checking if any documents match filenames
-        results = retriever.retrieve_context(
-            search_queries=[test_query],
-            filenames=filenames,
-            top_k=1
-        )
-        
-        if not results:
-            logger.warning(f"No documents found matching the specified filenames: {filenames}")
-            logger.warning("Please check that the documents are properly loaded into Chroma DB.")
-            return False
-        
-        logger.info(f"Collection check successful: {stats['document_count']} total documents, found matching documents for filenames.")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Error checking collection status: {e}")
-        return False
+    return all_found
 
 def main():
     """Main entry point for the Document Research Agent."""
     # Parse command line arguments
     args = parse_arguments()
     
-    # Check environment
-    if not check_environment():
-        return 1
-    
-    # Check collection status if requested
-    if args.check_collection:
-        logger.info("Checking Chroma DB collection status...")
-        if not check_collection_status(args.filenames):
-            logger.error("Collection check failed. Please ensure your documents are properly loaded.")
-            return 1
-        logger.info("Collection check completed successfully.")
-        return 0
+    # Enable debug logging for document retrieval if requested
+    if args.debug_retrieval:
+        logging.getLogger('src.retriever').setLevel(logging.DEBUG)
+        logger.info("Document retrieval debugging enabled")
     
     try:
-        # Build the graph
-        graph = build_graph()
+        # Check if documents exist
+        if not check_document_availability(args.filenames):
+            logger.warning("Some specified documents were not found. Results may be affected.")
         
-        # Prepare the input state
-        input_state = {
-            "original_query": args.query,
-            "filenames": args.filenames
-        }
+        # Initialize the agent
+        agent = DocumentResearchAgent()
         
+        # Check collection status if requested
+        if args.check_collection:
+            logger.info("Checking Chroma DB collection status...")
+            status = agent.check_collection_status(args.filenames)
+            
+            if status["success"]:
+                print("\nCollection check successful:")
+                print(f"- Document count: {status['document_count']}")
+                if status.get("filenames_found") is not None:
+                    print(f"- Specified filenames found: {'Yes' if status['filenames_found'] else 'No'}")
+                logger.info("Collection check completed successfully.")
+                return 0
+            else:
+                print("\nCollection check failed:")
+                print(f"- Error: {status.get('error', 'Unknown error')}")
+                print(f"- Document count: {status.get('document_count', 0)}")
+                if status.get("filenames_found") is not None:
+                    print(f"- Specified filenames found: {'Yes' if status['filenames_found'] else 'No'}")
+                logger.error("Collection check failed.")
+                return 1
+        
+        # Run the agent
         logger.info(f"Starting research with query: {args.query}")
-        logger.info(f"Document filenames: {args.filenames}")
-        
-        # Execute the graph
-        final_state = graph.invoke(input_state)
-        
-        # Format the output
-        result = format_output(final_state)
+        result = agent.run(
+            query=args.query,
+            filenames=args.filenames,
+            max_iterations=args.max_iterations,
+            include_scratchpad=args.verbose
+        )
         
         # Print the result
         print_result(result, args.verbose)
@@ -195,7 +192,8 @@ def main():
         if args.output:
             save_to_file(result, args.output)
         
-        return 0
+        # Return appropriate exit code
+        return 0 if result.get("success", False) else 1
     
     except Exception as e:
         logger.error(f"Error running Document Research Agent: {e}", exc_info=True)

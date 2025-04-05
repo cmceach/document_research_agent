@@ -1,5 +1,5 @@
 import os
-from typing import Dict, List, Any, Tuple, Optional, Literal
+from typing import Dict, List, Any, Tuple, Optional, Literal, Union
 import logging
 from tenacity import retry, wait_exponential, stop_after_attempt
 
@@ -7,9 +7,12 @@ from tenacity import retry, wait_exponential, stop_after_attempt
 from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import StrOutputParser
 from pydantic import BaseModel, Field
+from langchain_community.callbacks.manager import get_openai_callback
+
+# Import utility functions
+from src.llm_calls.utils import format_context, format_previous_queries, clean_query_results, truncate_context_for_tokens
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Define Pydantic models for structured outputs
@@ -38,67 +41,145 @@ class SearchQueries(BaseModel):
         description="List of search queries to find relevant information"
     )
 
+class TokenUsage(BaseModel):
+    """Token usage statistics"""
+    prompt_tokens: int = Field(0, description="Number of tokens used in prompts")
+    completion_tokens: int = Field(0, description="Number of tokens in completions")
+    total_tokens: int = Field(0, description="Total tokens used")
+
 class LLMWrappers:
-    """Wrappers for LLM calls in the Document Research Agent using LangChain."""
+    """Wrapper for LLM calls in the Document Research Agent using LangChain."""
     
-    def __init__(self, lazy_init=False):
+    def __init__(self, lazy_init: bool = False):
+        """
+        Initialize the LLM wrapper with LangChain models.
+        
+        Args:
+            lazy_init: If True, delay model initialization until first use
+        """
         self.api_key = os.environ.get("OPENAI_API_KEY")
-        self.model_name = os.environ.get("OPENAI_CHAT_MODEL_NAME", "o3-mini")
+        self.model_name = os.environ.get("OPENAI_CHAT_MODEL_NAME", "gpt-4o")
         
         # Initialize models unless lazy initialization is requested
         self.chat_model = None
         
+        # Initialize token usage counters
+        self.token_usage = TokenUsage()
+        
         # Load models immediately unless lazy_init is True
         if not lazy_init:
             self._ensure_models_initialized()
-
-    def _ensure_models_initialized(self):
+    
+    def _ensure_models_initialized(self) -> ChatOpenAI:
         """
         Initialize the ChatOpenAI model if it hasn't been already.
+        
+        Returns:
+            The initialized ChatOpenAI model
         """
         if not self.chat_model:
-            from langchain_openai import ChatOpenAI
-            
-            # Initialize the model - o3-mini doesn't support temperature parameter
-            if self.model_name == "o3-mini":
+            # Check if the model is o3-mini which doesn't support temperature
+            if "o3-mini" in self.model_name:
                 self.chat_model = ChatOpenAI(
                     model_name=self.model_name
                 )
+                logger.info(f"LLM models initialized using {self.model_name} without temperature (not supported)")
             else:
+                # Always use temperature=0 for deterministic results for models that support it
                 self.chat_model = ChatOpenAI(
                     model_name=self.model_name,
-                    temperature=0.0  # Lower temperature for more consistent outputs
+                    temperature=0.0
                 )
-            
-            logging.info(f"LLM models initialized using {self.model_name}")
+                logger.info(f"LLM models initialized using {self.model_name} with temperature=0.0")
         
         return self.chat_model
     
+    def _get_structured_llm(self, model_class: type) -> Any:
+        """
+        Get a structured LLM with the specified output schema.
+        
+        Args:
+            model_class: The Pydantic model class for structured output
+            
+        Returns:
+            A structured LLM with the specified schema
+        """
+        self._ensure_models_initialized()
+        return self.chat_model.with_structured_output(model_class)
+    
+    def _create_messages(self, system_prompt: str, user_prompt: str) -> List[Dict[str, str]]:
+        """
+        Create a messages list for LLM invocation.
+        
+        Args:
+            system_prompt: The system prompt for the LLM
+            user_prompt: The user prompt for the LLM
+            
+        Returns:
+            A list of message dictionaries
+        """
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+    
+    def _update_token_usage(self, usage: Dict[str, int]) -> None:
+        """
+        Update token usage statistics
+        
+        Args:
+            usage: Token usage dictionary from the OpenAI callback
+        """
+        self.token_usage.prompt_tokens += usage.get("prompt_tokens", 0)
+        self.token_usage.completion_tokens += usage.get("completion_tokens", 0)
+        self.token_usage.total_tokens += usage.get("total_tokens", 0)
+    
+    def get_token_usage(self) -> Dict[str, int]:
+        """
+        Get the current token usage statistics
+        
+        Returns:
+            Dictionary with token usage information
+        """
+        return {
+            "prompt_tokens": self.token_usage.prompt_tokens,
+            "completion_tokens": self.token_usage.completion_tokens,
+            "total_tokens": self.token_usage.total_tokens
+        }
+    
+    def reset_token_usage(self) -> None:
+        """Reset the token usage counters to zero"""
+        self.token_usage = TokenUsage()
+    
     @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3))
-    def generate_search_queries_llm(self, 
-                                   original_query: str, 
-                                   retrieved_context: List[Dict[str, Any]],
-                                   previous_queries: List[str],
-                                   generation_attempt: int = 1) -> List[str]:
+    def generate_search_queries_llm(
+        self, 
+        original_query: str, 
+        retrieved_context: List[Dict[str, Any]],
+        previous_queries: List[str],
+        generation_attempt: int = 1
+    ) -> List[str]:
         """
         Generate search queries based on the original query and retrieved context.
+        
+        Args:
+            original_query: The user's original question
+            retrieved_context: Previously retrieved context chunks
+            previous_queries: Previously generated search queries
+            generation_attempt: Current attempt number for generating queries
+            
+        Returns:
+            List of search query strings
         """
         try:
-            self._ensure_models_initialized()
+            # Create structured LLM
+            structured_llm = self._get_structured_llm(SearchQueries)
             
-            # Prepare context for the prompt
-            formatted_context = ""
-            if retrieved_context:
-                for i, item in enumerate(retrieved_context):
-                    formatted_context += f"[{i+1}] Text: {item['text']}\nSource: {item['filename']}, Page: {item['page']}\n\n"
+            # Format context and previous queries
+            formatted_context = format_context(retrieved_context)
+            formatted_prev_queries = format_previous_queries(previous_queries)
             
-            formatted_prev_queries = "\n".join([f"- {q}" for q in previous_queries]) if previous_queries else "None"
-            
-            # Create structured output chain with JSON mode instead of function_calling
-            structured_llm = self.chat_model.with_structured_output(
-                SearchQueries
-            )
-            
+            # Create prompts
             system_prompt = """You are a skilled researcher with the ability to formulate targeted search queries to find information in a document.
 Based on the original question and any previously retrieved context, generate specific and effective keyword search queries that will help find
 additional relevant information to answer the question comprehensively.
@@ -115,25 +196,27 @@ Previous Search Queries:
 {formatted_prev_queries}
 
 Context Retrieved So Far:
-{formatted_context or "No context retrieved yet."}
+{formatted_context}
 
 Based on the above, generate 2-3 effective search queries that will help find information to answer the original question.
 This is attempt #{generation_attempt} at generating queries."""
             
-            # Use messages list format
-            result = structured_llm.invoke([
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ])
+            # Create messages and invoke LLM with token tracking
+            messages = self._create_messages(system_prompt, user_prompt)
             
-            # Result is a Pydantic model with a queries attribute
-            queries = result.queries
+            # Track token usage
+            with get_openai_callback() as cb:
+                result = structured_llm.invoke(messages)
+                # Update token usage from callback
+                self._update_token_usage({
+                    "prompt_tokens": cb.prompt_tokens,
+                    "completion_tokens": cb.completion_tokens,
+                    "total_tokens": cb.total_tokens
+                })
+                logger.debug(f"Search query generation used {cb.total_tokens} tokens (prompt: {cb.prompt_tokens}, completion: {cb.completion_tokens})")
             
-            # Filter out any empty queries and limit to reasonable length
-            queries = [q.strip() for q in queries if q and q.strip()]
-            queries = [q[:100] for q in queries]  # Limit length of each query
-            
-            return queries[:3]  # Return at most 3 queries
+            # Clean and return the query results
+            return clean_query_results(result.queries)
             
         except Exception as e:
             logger.error(f"Error in query generation: {e}")
@@ -141,107 +224,118 @@ This is attempt #{generation_attempt} at generating queries."""
             return [original_query]
     
     @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3))
-    def grade_context_llm(self, 
-                         original_query: str, 
-                         retrieved_context: List[Dict[str, Any]],
-                         iterations: int,
-                         max_iterations: int) -> str:
+    def grade_context_llm(
+        self, 
+        original_query: str, 
+        retrieved_context: List[Dict[str, Any]],
+        iterations: int,
+        max_iterations: int
+    ) -> str:
         """
         Evaluate if the retrieved context is sufficient to answer the query.
+        
+        Args:
+            original_query: The user's original query
+            retrieved_context: List of context items retrieved so far
+            iterations: Current iteration count
+            max_iterations: Maximum allowed iterations
+            
+        Returns:
+            Decision string: "FINISH", "CONTINUE", "RETRY_GENERATION", or "FAIL"
         """
         try:
-            self._ensure_models_initialized()
+            # Create structured LLM
+            structured_llm = self._get_structured_llm(ContextDecision)
             
-            # Prepare context for the prompt
-            formatted_context = ""
-            if retrieved_context:
-                for i, item in enumerate(retrieved_context):
-                    formatted_context += f"[{i+1}] Text: {item['text']}\nSource: {item['filename']}, Page: {item['page']}\n\n"
+            # Format the context for the prompt
+            formatted_context = format_context(retrieved_context)
             
-            # Create structured output chain with JSON mode instead of function_calling
-            structured_llm = self.chat_model.with_structured_output(
-                ContextDecision
-            )
-            
-            system_prompt = """You are an expert researcher who evaluates if the information retrieved from documents is sufficient to answer a question.
+            # Create prompts
+            system_prompt = """You are an expert research assistant evaluating if the retrieved context is sufficient to answer a question.
+Your job is to determine if:
+1. The context is sufficient to provide a complete and accurate answer (FINISH)
+2. More context is needed to properly answer the question (CONTINUE)
+3. The retrieval strategy needs to be adjusted (RETRY_GENERATION)
+4. We should give up because the information is likely not in the documents (FAIL)
 
-Your task is to determine if the retrieved context contains enough information to provide a complete and accurate answer to the original question.
-
-Consider the following:
-1. Is there enough context to fully answer all aspects of the question?
-2. Are there any missing pieces of information that would make the answer incomplete?
-3. Is the information relevant and directly addresses the question?
-4. Is the information from reliable sources within the document set?
-
-Return one of these decisions:
-- "FINISH" if the context is sufficient to provide a complete answer
-- "CONTINUE" if more information is needed but the current context is relevant
-- "RETRY_GENERATION" if the current search approach isn't yielding relevant information and we should try different queries
-- "FAIL" if after multiple attempts, it's clear the documents don't contain information to answer the question"""
+Guidelines:
+- Choose FINISH if all aspects of the question can be answered with the current context
+- Choose CONTINUE if some parts of the question remain unanswered but more retrieval may help
+- Choose RETRY_GENERATION if the current retrieval strategy isn't working well
+- Choose FAIL only if we've made multiple attempts and still have no relevant information"""
             
             user_prompt = f"""Original Question: {original_query}
 
+Current Iteration: {iterations} of {max_iterations}
+
 Retrieved Context:
-{formatted_context or "No context retrieved yet."}
+{formatted_context}
 
-Current iteration: {iterations} out of maximum {max_iterations} iterations.
-
-Based on the context above, should I:
-1. FINISH - The context contains sufficient information to answer the question
-2. CONTINUE - Need more information, continue searching with similar queries
-3. RETRY_GENERATION - Current search approach isn't working, try different queries
-4. FAIL - The documents likely don't contain the information needed"""
+Based on the above, determine if we should:
+- FINISH (context is sufficient to answer the question)
+- CONTINUE (need more context, continue retrieval)
+- RETRY_GENERATION (current strategy isn't working, try new queries)
+- FAIL (give up, information likely not in documents)"""
             
-            # Use messages list format
-            result = structured_llm.invoke([
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ])
+            # Create messages and invoke LLM
+            messages = self._create_messages(system_prompt, user_prompt)
+            
+            # Track token usage
+            with get_openai_callback() as cb:
+                result = structured_llm.invoke(messages)
+                self._update_token_usage({
+                    "prompt_tokens": cb.prompt_tokens,
+                    "completion_tokens": cb.completion_tokens,
+                    "total_tokens": cb.total_tokens
+                })
+                logger.debug(f"Context grading used {cb.total_tokens} tokens")
             
             return result.decision
             
         except Exception as e:
             logger.error(f"Error in context grading: {e}")
-            # Default behavior based on iterations
-            if iterations >= max_iterations - 1:
+            
+            # If we hit maximum iterations, finish anyway
+            if iterations >= max_iterations:
                 return "FINISH"
+            
+            # Otherwise continue to be safe
             return "CONTINUE"
     
     @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3))
-    def generate_final_answer_llm(self, 
-                                 original_query: str, 
-                                 retrieved_context: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
+    def generate_final_answer_llm(
+        self, 
+        original_query: str, 
+        retrieved_context: List[Dict[str, Any]]
+    ) -> Tuple[str, List[Dict[str, Any]]]:
         """
-        Generate the final answer based on retrieved context.
+        Generate a final answer with citations based on the retrieved context.
+        
+        Args:
+            original_query: The user's original query
+            retrieved_context: List of context items retrieved
+            
+        Returns:
+            Tuple containing the answer string and a list of citation dictionaries
         """
         try:
-            self._ensure_models_initialized()
+            # Create structured LLM
+            structured_llm = self._get_structured_llm(FinalAnswer)
             
-            if not retrieved_context:
-                return "Information not found in provided documents", []
+            # Format the context for the prompt
+            # First truncate if needed to fit within token limits
+            truncated_context = truncate_context_for_tokens(retrieved_context, max_items=15)
+            if len(truncated_context) < len(retrieved_context):
+                logger.warning(f"Context was truncated from {len(retrieved_context)} to {len(truncated_context)} items to fit within token limits")
             
-            # Prepare context for the prompt
-            formatted_context = ""
-            context_items = {}  # Store context items by their index for easier citation
+            # Format for the prompt
+            formatted_context = format_context(truncated_context)
             
-            for i, item in enumerate(retrieved_context):
-                # Use 1-indexed numbering in the prompt
-                index = i + 1
-                formatted_context += f"[{index}] Text: {item['text']}\nSource: {item['filename']}, Page: {item['page']}\n\n"
-                # Store the context item with its index
-                context_items[index] = item
-            
-            # Create structured output chain with JSON mode instead of function_calling
-            structured_llm = self.chat_model.with_structured_output(
-                FinalAnswer
-            )
-            
-            system_prompt = """You are an AI research assistant that provides accurate, factual answers based ONLY on the provided document context.
-Your task is to synthesize information from the context to answer the user's question completely and accurately.
-
-When providing an answer:
-1. Only include information that is present in the context
-2. Do not make up or infer information that is not explicitly stated
+            # Create prompts
+            system_prompt = """You are a meticulous research assistant tasked with answering questions based on specific context provided.
+Your response should:
+1. Be comprehensive, accurate, and directly address the question
+2. Be based ONLY on the provided context - do not include outside knowledge
 3. Cite specific sources from the context that support your answer using the format [X] where X is the source number
 4. If the context doesn't contain enough information to answer the question, say so clearly
 
@@ -259,20 +353,28 @@ Context:
 
 Based ONLY on the context provided above, answer the question. Include relevant citations for each key point in your answer."""
             
-            # Use messages list format
-            result = structured_llm.invoke([
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ])
+            # Create messages and invoke LLM
+            messages = self._create_messages(system_prompt, user_prompt)
+            
+            # Track token usage
+            with get_openai_callback() as cb:
+                result = structured_llm.invoke(messages)
+                self._update_token_usage({
+                    "prompt_tokens": cb.prompt_tokens,
+                    "completion_tokens": cb.completion_tokens,
+                    "total_tokens": cb.total_tokens
+                })
+                logger.debug(f"Final answer generation used {cb.total_tokens} tokens")
             
             # Process the citations to ensure they match the format expected by the agent
-            processed_citations = []
-            for citation in result.citations:
-                processed_citations.append({
+            processed_citations = [
+                {
                     "text": citation.text,
                     "page": citation.page,
                     "filename": citation.filename
-                })
+                }
+                for citation in result.citations
+            ]
             
             return result.answer, processed_citations
             

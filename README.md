@@ -52,6 +52,8 @@ The ingestion script:
 - **Context-Aware Responses**: Generates responses that consider the document context
 - **Command-Line Interface**: Simple CLI for interacting with the agent
 - **Structured Output with LangChain**: Uses LangChain's structured output capabilities for reliable response formatting
+- **Robust Error Handling**: Comprehensive error handling and detailed status reporting
+- **Configurable Parameters**: Adjustable maximum iterations and other runtime parameters
 
 ## Installation
 
@@ -95,24 +97,48 @@ from src.agent import DocumentResearchAgent
 agent = DocumentResearchAgent()
 
 # Run a query
-result = agent.run("What are the key provisions in this contract?", filenames=["path/to/document.pdf"])
+result = agent.run(
+    query="What are the key provisions in this contract?",
+    filenames=["path/to/document.pdf"],
+    max_iterations=5,  # Optional: override default iterations
+    include_scratchpad=True  # Optional: include agent reasoning
+)
 
 # Access the results
-print(result["final_answer"])
-for citation in result["citations"]:
-    print(f"- {citation['filename']}, Page {citation['page']}: '{citation['text']}'")
+if result["success"]:
+    print(f"Answer: {result['final_answer']}")
+    
+    for citation in result["citations"]:
+        print(f"- {citation['filename']}, Page {citation['page']}: '{citation['text']}'")
+    
+    # Optional: access agent reasoning
+    if "agent_scratchpad" in result:
+        print(f"Agent reasoning: {result['agent_scratchpad']}")
+else:
+    print(f"Error: {result.get('error', 'Unknown error')}")
 ```
 
 ### Check Collection Status
 
 ```bash
-python -m src.main "Check collection status" --filenames path/to/document.pdf --check-collection
+# Check if documents are properly loaded into ChromaDB
+python test_document_research.py --check-collection
+
+# Check for specific files
+python test_document_research.py --check-collection --filename document1.pdf --filename document2.pdf
 ```
 
-### Run with Verbose Output
+### Run with Custom Query
 
 ```bash
-python -m src.main "What are the key provisions in this contract?" --filenames path/to/document.pdf --verbose
+# Run with a custom query
+python test_document_research.py --query "What are the payment terms in this contract?"
+
+# Run with specific files and verbose output
+python test_document_research.py --query "Summarize the main points" --filename contract.pdf --verbose
+
+# Run with custom max iterations
+python test_document_research.py --max-iterations 3
 ```
 
 ## Evaluation Framework

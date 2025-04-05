@@ -5,16 +5,25 @@ DocumentResearchAgent class that provides a simple interface for using the Docum
 
 import os
 import logging
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Set, Union
 
 from src.graph_builder import build_graph
 from src.retriever.chroma_retriever import ChromaRetriever
+from src.llm_calls.llm_wrappers import LLMWrappers
 
 # Setup logging
 logger = logging.getLogger(__name__)
 
 class DocumentResearchAgent:
     """A document research agent that can retrieve information from documents based on a query."""
+    
+    # Define required environment variables
+    REQUIRED_ENV_VARS: Set[str] = {
+        "OPENAI_API_KEY",
+        "CHROMA_DB_PATH",
+        "CHROMA_COLLECTION_NAME",
+        "OPENAI_EMBEDDING_MODEL_NAME"
+    }
     
     def __init__(self, check_environment: bool = True):
         """
@@ -23,35 +32,42 @@ class DocumentResearchAgent:
         Args:
             check_environment: Whether to check environment variables on initialization
         """
-        # Build the graph
-        self.graph = build_graph()
-        
         # Check environment if requested
-        if check_environment:
-            self._check_environment()
+        if check_environment and not self._check_environment():
+            logger.warning("Continuing with initialization despite missing environment variables")
         
-        # Initialize retriever
-        self.retriever = ChromaRetriever()
+        # Build the graph
+        try:
+            self.graph = build_graph()
+            logger.debug("Successfully built agent graph")
+        except Exception as e:
+            logger.error(f"Failed to build agent graph: {e}")
+            raise RuntimeError(f"Failed to initialize Document Research Agent: {e}")
+        
+        # Initialize retriever with lazy initialization
+        self.retriever = ChromaRetriever(lazy_init=True)
+        
+        # Get reference to LLM wrappers for token tracking
+        self.llm_wrapper = LLMWrappers(lazy_init=True)
     
     def _check_environment(self) -> bool:
-        """Check if all required environment variables are set."""
-        required_vars = [
-            "OPENAI_API_KEY",
-            "CHROMA_DB_PATH",
-            "CHROMA_COLLECTION_NAME",
-            "OPENAI_EMBEDDING_MODEL_NAME"
-        ]
+        """
+        Check if all required environment variables are set.
         
-        missing = [var for var in required_vars if not os.environ.get(var)]
+        Returns:
+            Boolean indicating whether all required environment variables are set
+        """
+        missing = [var for var in self.REQUIRED_ENV_VARS if not os.environ.get(var)]
         
         if missing:
             logger.error(f"Missing required environment variables: {', '.join(missing)}")
             logger.error("Please set these variables in your .env file or environment.")
             return False
         
+        logger.debug("All required environment variables are set")
         return True
     
-    def check_collection_status(self, filenames: Optional[List[str]] = None) -> bool:
+    def check_collection_status(self, filenames: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Check if the Chroma DB collection exists and has documents.
         
@@ -59,20 +75,30 @@ class DocumentResearchAgent:
             filenames: List of document filenames to check for (optional)
             
         Returns:
-            Boolean indicating whether the collection check was successful
+            Dictionary with status information about the collection
         """
         try:
             # Get collection statistics
             stats = self.retriever.get_collection_stats()
             
+            result = {
+                "success": True,
+                "document_count": stats["document_count"],
+                "embedding_count": stats.get("embedding_count", 0),
+                "has_documents": stats["document_count"] > 0,
+                "filenames_found": None
+            }
+            
             if stats["document_count"] == 0:
                 logger.error("Collection exists but contains no documents.")
-                return False
+                result["success"] = False
+                result["error"] = "Collection exists but contains no documents"
+                return result
             
             # If filenames are provided, check if they exist in the collection
             if filenames:
-                # Test retrieval with a basic query to check for any documents with the specified filenames
-                test_query = "test query"  # Not important, just checking if any documents match filenames
+                # Test retrieval with a basic query to check for specified filenames
+                test_query = "test query"
                 results = self.retriever.retrieve_context(
                     search_queries=[test_query],
                     filenames=filenames,
@@ -81,32 +107,85 @@ class DocumentResearchAgent:
                 
                 if not results:
                     logger.warning(f"No documents found matching the specified filenames: {filenames}")
-                    return False
+                    result["success"] = False
+                    result["error"] = f"No documents found matching the specified filenames: {filenames}"
+                    result["filenames_found"] = False
+                else:
+                    result["filenames_found"] = True
             
-            logger.info(f"Collection check successful: {stats['document_count']} total documents")
-            return True
+            logger.info(f"Collection check completed: {stats['document_count']} total documents")
+            return result
                 
         except Exception as e:
             logger.error(f"Error checking collection status: {e}")
-            return False
+            return {
+                "success": False,
+                "error": str(e),
+                "document_count": 0,
+                "has_documents": False
+            }
     
-    def run(self, query: str, filenames: Optional[List[str]] = None) -> Dict[str, Any]:
+    def get_token_usage(self) -> Dict[str, int]:
+        """
+        Get the current token usage statistics
+        
+        Returns:
+            Dictionary with token usage information
+        """
+        return self.llm_wrapper.get_token_usage()
+    
+    def reset_token_usage(self) -> None:
+        """Reset the token usage counters to zero"""
+        self.llm_wrapper.reset_token_usage()
+    
+    def run(
+        self, 
+        query: str, 
+        filenames: Optional[List[str]] = None,
+        max_iterations: Optional[int] = None,
+        include_scratchpad: bool = False,
+        reset_token_usage: bool = True
+    ) -> Dict[str, Any]:
         """
         Run the Document Research Agent with the given query.
         
         Args:
             query: The question to research in the documents
             filenames: List of document filenames to search within (optional)
+            max_iterations: Maximum number of iterations (optional, overrides default)
+            include_scratchpad: Whether to include agent reasoning in the output
+            reset_token_usage: Whether to reset token usage counters before running
             
         Returns:
-            Dictionary containing the final answer and citations
+            Dictionary containing the final answer, citations, and token usage
         """
+        # Reset token usage if requested
+        if reset_token_usage:
+            self.reset_token_usage()
+            
+        if not query or not isinstance(query, str) or query.strip() == "":
+            logger.error("Invalid query: Query must be a non-empty string")
+            return {
+                "success": False,
+                "error": "Query must be a non-empty string",
+                "final_answer": "Error: Invalid query",
+                "citations": [],
+                "token_usage": self.get_token_usage()
+            }
+        
         try:
             # Prepare the input state
             input_state = {
                 "original_query": query,
                 "filenames": filenames or []
             }
+            
+            # Add optional max_iterations if provided
+            if max_iterations is not None:
+                if isinstance(max_iterations, int) and max_iterations > 0:
+                    input_state["max_iterations"] = max_iterations
+                else:
+                    logger.warning(f"Invalid max_iterations: {max_iterations}, using default")
             
             logger.info(f"Starting research with query: {query}")
             if filenames:
@@ -115,19 +194,33 @@ class DocumentResearchAgent:
             # Execute the graph
             final_state = self.graph.invoke(input_state)
             
+            # Get token usage information
+            token_usage = self.get_token_usage()
+            logger.info(f"Token usage - Total: {token_usage['total_tokens']}, " 
+                       f"Prompt: {token_usage['prompt_tokens']}, "
+                       f"Completion: {token_usage['completion_tokens']}")
+            
             # Format the output
             result = {
+                "success": True,
                 "final_answer": final_state.get("final_answer", "No answer generated"),
                 "citations": final_state.get("citations", []),
-                "agent_scratchpad": final_state.get("agent_scratchpad", "")
+                "iterations": final_state.get("iterations", 0),
+                "token_usage": token_usage
             }
+            
+            # Include scratchpad if requested
+            if include_scratchpad:
+                result["agent_scratchpad"] = final_state.get("agent_scratchpad", "")
             
             return result
         
         except Exception as e:
             logger.error(f"Error executing Document Research Agent: {e}")
             return {
+                "success": False,
+                "error": str(e),
                 "final_answer": f"Error: {str(e)}",
                 "citations": [],
-                "agent_scratchpad": ""
+                "token_usage": self.get_token_usage()
             } 

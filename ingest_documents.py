@@ -85,20 +85,24 @@ def ingest_documents(document_paths, chunk_size=1000, chunk_overlap=200):
             continue
             
         # Extract text from document
+        logger.info(f"Extracting text from {doc_path}")
         pages = extract_text_from_pdf(doc_path)
+        
+        # Get just the filename (not the full path)
+        filename = os.path.basename(doc_path)
         
         # Add each page as a separate document
         for page in pages:
             try:
                 # Create a unique ID
-                doc_id = f"{os.path.basename(doc_path)}_page_{page['page_number']}"
+                doc_id = f"{filename}_page_{page['page_number']}"
                 
                 # Add to collection
                 collection.add(
                     ids=[doc_id],
                     documents=[page["text"]],
                     metadatas=[{
-                        "filename": doc_path, 
+                        "filename": filename,  # Store just the filename, not the full path
                         "page_number": page["page_number"]
                     }]
                 )

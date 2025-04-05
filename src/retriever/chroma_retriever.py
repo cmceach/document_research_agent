@@ -95,6 +95,29 @@ class ChromaRetriever:
             logger.error(f"Error accessing collection: {e}")
             raise
     
+    def _normalize_filenames(self, filenames: List[str]) -> List[str]:
+        """
+        Normalize filenames by extracting just the basename if full paths are provided.
+        
+        Args:
+            filenames: List of filenames or file paths
+            
+        Returns:
+            List of normalized filenames (basenames only)
+        """
+        if not filenames:
+            return []
+            
+        normalized = []
+        for fname in filenames:
+            # Extract just the basename if a path is provided
+            basename = os.path.basename(fname)
+            normalized.append(basename)
+            if basename != fname:
+                logger.debug(f"Normalized filename from '{fname}' to '{basename}'")
+                
+        return normalized
+    
     @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3))
     def generate_embeddings(self, text: str) -> List[float]:
         """Generate embeddings for the given text using OpenAI."""
@@ -136,11 +159,15 @@ class ChromaRetriever:
             if self.collection is None:
                 self._initialize_clients()
                 
+            # Normalize filenames to just basenames
+            normalized_filenames = self._normalize_filenames(filenames)
+            
             # Create a filter for filenames if provided
             where_filter = None
-            if filenames:
-                where_filter = {"filename": {"$in": filenames}}
-                logger.info(f"Filtering results by filenames: {filenames}")
+            if normalized_filenames:
+                where_filter = {"filename": {"$in": normalized_filenames}}
+                logger.info(f"Filtering results by filenames: {normalized_filenames}")
+                logger.debug(f"Using where filter: {where_filter}")
             
             # Process each search query
             for query in search_queries:
@@ -152,12 +179,22 @@ class ChromaRetriever:
                         query_texts=[query],
                         n_results=top_k,
                         where=where_filter,
-                        include=["documents", "metadatas"]
+                        include=["documents", "metadatas", "distances"]
                     )
                     
                     # Process results
                     if search_results and search_results.get("documents") and search_results["documents"][0]:
-                        logger.info(f"Retrieved {len(search_results['documents'][0])} results for query: '{query}'")
+                        docs_count = len(search_results["documents"][0])
+                        logger.info(f"Retrieved {docs_count} results for query: '{query}'")
+                        
+                        # Log more details about the results if in debug mode
+                        if logger.isEnabledFor(logging.DEBUG) and docs_count > 0:
+                            metadatas = search_results.get("metadatas", [[]])
+                            distances = search_results.get("distances", [[]])
+                            
+                            if metadatas and metadatas[0] and distances and distances[0]:
+                                for i in range(min(docs_count, 3)):  # Log only up to 3 results to avoid overwhelming logs
+                                    logger.debug(f"Result {i+1}: Metadata={metadatas[0][i]}, Distance={distances[0][i]:.4f}")
                         
                         # Extract results into our consistent format
                         for i, document in enumerate(search_results["documents"][0]):
@@ -175,11 +212,14 @@ class ChromaRetriever:
                                 except (ValueError, TypeError):
                                     page_number = 0
                             
+                            # Get the filename from metadata
+                            filename = metadata.get("filename", "unknown")
+                            
                             unique_contents.add(document)
                             results.append({
                                 "text": document,
                                 "page": page_number,
-                                "filename": metadata.get("filename", "unknown")
+                                "filename": filename
                             })
                     else:
                         logger.info(f"No results found for query: '{query}'")
@@ -189,6 +229,13 @@ class ChromaRetriever:
                     continue
             
             logger.info(f"Retrieved {len(results)} unique context items across all queries")
+            
+            # Log the first few results for debugging
+            if logger.isEnabledFor(logging.DEBUG) and results:
+                for i, result in enumerate(results[:2]):  # Just log first 2 to avoid verbose logs
+                    logger.debug(f"Context item {i+1}: Filename={result['filename']}, Page={result['page']}")
+                    logger.debug(f"Text sample: {result['text'][:100]}...")
+            
             return results
             
         except Exception as e:
@@ -202,17 +249,25 @@ class ChromaRetriever:
             if self.collection is None:
                 self._initialize_clients()
                 
-            count = self.collection.count()
+            document_count = self.collection.count()
+            
+            # Get a sample of documents to examine metadata
+            sample = self.collection.peek(limit=5)
+            
+            # Extract available filenames from metadata
+            available_filenames = set()
+            if sample and sample.get("metadatas"):
+                for metadata in sample["metadatas"]:
+                    if metadata and "filename" in metadata:
+                        available_filenames.add(metadata["filename"])
+            
+            logger.debug(f"Sample filenames in collection: {list(available_filenames)}")
+            
             return {
-                "collection_name": self.collection_name,
-                "document_count": count,
-                "embedding_model": self.embedding_model
+                "document_count": document_count,
+                "sample_filenames": list(available_filenames)
             }
+            
         except Exception as e:
             logger.error(f"Error getting collection stats: {e}")
-            return {
-                "collection_name": self.collection_name,
-                "document_count": 0,
-                "embedding_model": self.embedding_model,
-                "error": str(e)
-            } 
+            return {"document_count": 0, "error": str(e)} 
