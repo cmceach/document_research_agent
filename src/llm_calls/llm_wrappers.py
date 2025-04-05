@@ -1,41 +1,78 @@
 import os
-import json
-from typing import Dict, List, Any, Tuple
-from openai import OpenAI
+from typing import Dict, List, Any, Tuple, Optional, Literal
 import logging
 from tenacity import retry, wait_exponential, stop_after_attempt
+
+# Import LangChain components
+from langchain_openai import ChatOpenAI
+from langchain_core.output_parsers import StrOutputParser
+from pydantic import BaseModel, Field
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Define Pydantic models for structured outputs
+class Citation(BaseModel):
+    """Citation for a piece of information in a document."""
+    text: str = Field(..., description="The exact text quoted from the source")
+    page: int = Field(..., description="The page number where the text appears")
+    filename: str = Field(..., description="The filename of the source document")
+
+class FinalAnswer(BaseModel):
+    """Final answer with citations."""
+    answer: str = Field(..., description="The synthesized answer to the user's question")
+    citations: List[Citation] = Field(description="List of citations supporting the answer")
+
+class ContextDecision(BaseModel):
+    """Decision about the quality of retrieved context."""
+    decision: Literal["FINISH", "CONTINUE", "RETRY_GENERATION", "FAIL"] = Field(
+        ..., 
+        description="Decision on whether the context is sufficient"
+    )
+
+class SearchQueries(BaseModel):
+    """Search queries for retrieving context."""
+    queries: List[str] = Field(
+        ..., 
+        description="List of search queries to find relevant information"
+    )
+
 class LLMWrappers:
-    """Wrappers for LLM calls in the Document Research Agent."""
+    """Wrappers for LLM calls in the Document Research Agent using LangChain."""
     
     def __init__(self, lazy_init=False):
         self.api_key = os.environ.get("OPENAI_API_KEY")
-        self.chat_model = os.environ.get("OPENAI_CHAT_MODEL_NAME", "o3-mini")
+        self.model_name = os.environ.get("OPENAI_CHAT_MODEL_NAME", "o3-mini")
         
-        # Initialize OpenAI client
-        self.client = None
+        # Initialize models unless lazy initialization is requested
+        self.chat_model = None
+        
+        # Load models immediately unless lazy_init is True
         if not lazy_init:
-            self.client = self._init_openai_client()
-    
-    def _init_openai_client(self) -> OpenAI:
-        """Initialize the OpenAI client."""
-        try:
-            if not self.api_key:
-                raise ValueError("OpenAI API key is missing")
+            self._ensure_models_initialized()
+
+    def _ensure_models_initialized(self):
+        """
+        Initialize the ChatOpenAI model if it hasn't been already.
+        """
+        if not self.chat_model:
+            from langchain_openai import ChatOpenAI
             
-            return OpenAI(api_key=self.api_key)
-        except Exception as e:
-            logger.error(f"Failed to initialize OpenAI client: {e}")
-            raise
-    
-    def _ensure_client_initialized(self):
-        """Ensure the OpenAI client is initialized before use"""
-        if self.client is None:
-            self.client = self._init_openai_client()
+            # Initialize the model - o3-mini doesn't support temperature parameter
+            if self.model_name == "o3-mini":
+                self.chat_model = ChatOpenAI(
+                    model_name=self.model_name
+                )
+            else:
+                self.chat_model = ChatOpenAI(
+                    model_name=self.model_name,
+                    temperature=0.0  # Lower temperature for more consistent outputs
+                )
+            
+            logging.info(f"LLM models initialized using {self.model_name}")
+        
+        return self.chat_model
     
     @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3))
     def generate_search_queries_llm(self, 
@@ -45,18 +82,9 @@ class LLMWrappers:
                                    generation_attempt: int = 1) -> List[str]:
         """
         Generate search queries based on the original query and retrieved context.
-        
-        Args:
-            original_query: The user's original question
-            retrieved_context: Previously retrieved context chunks
-            previous_queries: Previously generated search queries
-            generation_attempt: Current attempt number for generating queries
-            
-        Returns:
-            List of search query strings
         """
         try:
-            self._ensure_client_initialized()
+            self._ensure_models_initialized()
             
             # Prepare context for the prompt
             formatted_context = ""
@@ -66,7 +94,11 @@ class LLMWrappers:
             
             formatted_prev_queries = "\n".join([f"- {q}" for q in previous_queries]) if previous_queries else "None"
             
-            # Create the prompt
+            # Create structured output chain with JSON mode instead of function_calling
+            structured_llm = self.chat_model.with_structured_output(
+                SearchQueries
+            )
+            
             system_prompt = """You are a skilled researcher with the ability to formulate targeted search queries to find information in a document.
 Based on the original question and any previously retrieved context, generate specific and effective keyword search queries that will help find
 additional relevant information to answer the question comprehensively.
@@ -75,9 +107,7 @@ Generate queries that:
 1. Break down complex questions into simpler, searchable components
 2. Use alternative phrasing or synonyms to increase chances of matches
 3. Focus on specific aspects of the question that need more context
-4. Are specific enough to find relevant information but not too narrow to miss important context
-
-Return ONLY a JSON array of search queries, with no additional text or explanation."""
+4. Are specific enough to find relevant information but not too narrow to miss important context"""
             
             user_prompt = f"""Original Question: {original_query}
 
@@ -88,40 +118,16 @@ Context Retrieved So Far:
 {formatted_context or "No context retrieved yet."}
 
 Based on the above, generate 2-3 effective search queries that will help find information to answer the original question.
-This is attempt #{generation_attempt} at generating queries.
-
-Return ONLY a JSON array of search queries. For example: ["query 1", "query 2", "query 3"]"""
+This is attempt #{generation_attempt} at generating queries."""
             
-            response = self.client.chat.completions.create(
-                model=self.chat_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.5,
-                max_tokens=150
-            )
+            # Use messages list format
+            result = structured_llm.invoke([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ])
             
-            content = response.choices[0].message.content
-            try:
-                # Try to parse as JSON
-                queries = json.loads(content)
-                if not isinstance(queries, list):
-                    logger.warning(f"LLM did not return a list: {content}")
-                    queries = [content]
-            except json.JSONDecodeError:
-                # If not valid JSON, use the raw content as a single query
-                logger.warning(f"Failed to parse LLM response as JSON: {content}")
-                # Try to extract array-like content from the text
-                import re
-                match = re.search(r'\[(.*)\]', content)
-                if match:
-                    try:
-                        queries = json.loads(f"[{match.group(1)}]")
-                    except:
-                        queries = [content]
-                else:
-                    queries = [content]
+            # Result is a Pydantic model with a queries attribute
+            queries = result.queries
             
             # Filter out any empty queries and limit to reasonable length
             queries = [q.strip() for q in queries if q and q.strip()]
@@ -142,18 +148,9 @@ Return ONLY a JSON array of search queries. For example: ["query 1", "query 2", 
                          max_iterations: int) -> str:
         """
         Evaluate if the retrieved context is sufficient to answer the query.
-        
-        Args:
-            original_query: The user's original query
-            retrieved_context: List of context items retrieved so far
-            iterations: Current iteration count
-            max_iterations: Maximum allowed iterations
-            
-        Returns:
-            Decision string: "FINISH", "CONTINUE", "RETRY_GENERATION", or "FAIL"
         """
         try:
-            self._ensure_client_initialized()
+            self._ensure_models_initialized()
             
             # Prepare context for the prompt
             formatted_context = ""
@@ -161,8 +158,13 @@ Return ONLY a JSON array of search queries. For example: ["query 1", "query 2", 
                 for i, item in enumerate(retrieved_context):
                     formatted_context += f"[{i+1}] Text: {item['text']}\nSource: {item['filename']}, Page: {item['page']}\n\n"
             
-            # Create the prompt
+            # Create structured output chain with JSON mode instead of function_calling
+            structured_llm = self.chat_model.with_structured_output(
+                ContextDecision
+            )
+            
             system_prompt = """You are an expert researcher who evaluates if the information retrieved from documents is sufficient to answer a question.
+
 Your task is to determine if the retrieved context contains enough information to provide a complete and accurate answer to the original question.
 
 Consider the following:
@@ -171,7 +173,7 @@ Consider the following:
 3. Is the information relevant and directly addresses the question?
 4. Is the information from reliable sources within the document set?
 
-Return ONLY one of these decisions with no additional explanation:
+Return one of these decisions:
 - "FINISH" if the context is sufficient to provide a complete answer
 - "CONTINUE" if more information is needed but the current context is relevant
 - "RETRY_GENERATION" if the current search approach isn't yielding relevant information and we should try different queries
@@ -188,35 +190,15 @@ Based on the context above, should I:
 1. FINISH - The context contains sufficient information to answer the question
 2. CONTINUE - Need more information, continue searching with similar queries
 3. RETRY_GENERATION - Current search approach isn't working, try different queries
-4. FAIL - The documents likely don't contain the information needed
-
-Return ONLY one decision word: FINISH, CONTINUE, RETRY_GENERATION, or FAIL."""
+4. FAIL - The documents likely don't contain the information needed"""
             
-            response = self.client.chat.completions.create(
-                model=self.chat_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.2,
-                max_tokens=20
-            )
+            # Use messages list format
+            result = structured_llm.invoke([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ])
             
-            content = response.choices[0].message.content.strip().upper()
-            
-            # Extract the decision - look for one of the valid decisions
-            valid_decisions = ["FINISH", "CONTINUE", "RETRY_GENERATION", "FAIL"]
-            for decision in valid_decisions:
-                if decision in content:
-                    return decision
-            
-            # If no valid decision found, determine based on context and iterations
-            if not retrieved_context:
-                return "CONTINUE" if iterations < max_iterations - 1 else "FAIL"
-            elif iterations >= max_iterations - 1:
-                return "FINISH"  # Last iteration, try to finish with what we have
-            else:
-                return "CONTINUE"  # Default to continue
+            return result.decision
             
         except Exception as e:
             logger.error(f"Error in context grading: {e}")
@@ -231,112 +213,68 @@ Return ONLY one decision word: FINISH, CONTINUE, RETRY_GENERATION, or FAIL."""
                                  retrieved_context: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
         """
         Generate the final answer based on retrieved context.
-        
-        Args:
-            original_query: The user's original query
-            retrieved_context: List of retrieved context items
-            
-        Returns:
-            Tuple of (answer_string, citations_list)
         """
         try:
-            self._ensure_client_initialized()
+            self._ensure_models_initialized()
             
             if not retrieved_context:
                 return "Information not found in provided documents", []
             
             # Prepare context for the prompt
             formatted_context = ""
-            for i, item in enumerate(retrieved_context):
-                formatted_context += f"[{i+1}] Text: {item['text']}\nSource: {item['filename']}, Page: {item['page']}\n\n"
+            context_items = {}  # Store context items by their index for easier citation
             
-            # Create the prompt
+            for i, item in enumerate(retrieved_context):
+                # Use 1-indexed numbering in the prompt
+                index = i + 1
+                formatted_context += f"[{index}] Text: {item['text']}\nSource: {item['filename']}, Page: {item['page']}\n\n"
+                # Store the context item with its index
+                context_items[index] = item
+            
+            # Create structured output chain with JSON mode instead of function_calling
+            structured_llm = self.chat_model.with_structured_output(
+                FinalAnswer
+            )
+            
             system_prompt = """You are an AI research assistant that provides accurate, factual answers based ONLY on the provided document context.
 Your task is to synthesize information from the context to answer the user's question completely and accurately.
 
-Important rules:
-1. ONLY use information found in the provided context. DO NOT use external knowledge or make up information.
-2. If the context doesn't contain enough information to answer the question, state "Information not found in provided documents."
-3. Cite your sources for each piece of information using the reference numbers from the context.
-4. Be concise but thorough in your answer.
-5. For each piece of information you use, you must provide a citation.
+When providing an answer:
+1. Only include information that is present in the context
+2. Do not make up or infer information that is not explicitly stated
+3. Cite specific sources from the context that support your answer using the format [X] where X is the source number
+4. If the context doesn't contain enough information to answer the question, say so clearly
 
-Return your response as a JSON object with two fields:
-1. "answer": A string containing your synthesized answer with citation references like [1], [2], etc.
-2. "citations": An array of objects, each with "text", "page", and "filename" fields corresponding to the citations used."""
+For your citations:
+- Include exact quotes from the source text
+- Specify the page number and filename for each quote
+- Link each citation to a specific claim in your answer
+
+Be thorough, accurate, and comprehensive in your response."""
             
-            user_prompt = f"""Original Question: {original_query}
+            user_prompt = f"""Question: {original_query}
 
 Context:
 {formatted_context}
 
-Based ONLY on the context above, answer the question. Include citation references like [1], [2] in your answer 
-to indicate which parts of the context you're using.
-
-Return your answer in this JSON format:
-{{
-  "answer": "Your synthesized answer with citation references [1], [2], etc.",
-  "citations": [
-    {{"text": "Exact text quoted from context item 1", "page": 5, "filename": "document1.pdf"}},
-    {{"text": "Exact text quoted from context item 2", "page": 10, "filename": "document2.pdf"}}
-  ]
-}}
-
-If you cannot answer the question from the provided context, return:
-{{
-  "answer": "Information not found in provided documents",
-  "citations": []
-}}"""
+Based ONLY on the context provided above, answer the question. Include relevant citations for each key point in your answer."""
             
-            response = self.client.chat.completions.create(
-                model=self.chat_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.3,
-                max_tokens=1000
-            )
+            # Use messages list format
+            result = structured_llm.invoke([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ])
             
-            content = response.choices[0].message.content
+            # Process the citations to ensure they match the format expected by the agent
+            processed_citations = []
+            for citation in result.citations:
+                processed_citations.append({
+                    "text": citation.text,
+                    "page": citation.page,
+                    "filename": citation.filename
+                })
             
-            try:
-                # Parse the JSON response
-                result = json.loads(content)
-                answer = result.get("answer", "")
-                citations = result.get("citations", [])
-                
-                # Validate answer
-                if not answer or answer.strip() == "":
-                    answer = "Information not found in provided documents"
-                    citations = []
-                
-                # If answer indicates information not found, ensure citations is empty
-                if "information not found" in answer.lower():
-                    citations = []
-                
-                # Validate each citation has required fields
-                valid_citations = []
-                for citation in citations:
-                    if isinstance(citation, dict) and "text" in citation:
-                        # Ensure all required fields exist
-                        valid_citation = {
-                            "text": citation.get("text", ""),
-                            "page": citation.get("page", 0),
-                            "filename": citation.get("filename", "unknown")
-                        }
-                        valid_citations.append(valid_citation)
-                
-                return answer, valid_citations
-                
-            except json.JSONDecodeError:
-                logger.warning(f"Failed to parse LLM response as JSON: {content}")
-                # Extract answer from non-JSON response
-                if "information not found" in content.lower():
-                    return "Information not found in provided documents", []
-                
-                # Try to create a reasonable answer from the raw text
-                return content, [{"text": "Citation information could not be parsed", "page": 0, "filename": "unknown"}]
+            return result.answer, processed_citations
             
         except Exception as e:
             logger.error(f"Error generating final answer: {e}")

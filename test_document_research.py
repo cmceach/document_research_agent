@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for the Document Research Agent with LangChain implementation.
+Test script for the Document Research Agent.
 """
 
 import os

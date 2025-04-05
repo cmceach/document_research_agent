@@ -8,3 +8,5 @@ tiktoken>=0.6.0
 tenacity>=8.2.3
 pydantic>=2.6.4
 pytest>=8.0.0 
+langchain-openai>=0.0.2
+langchain-core>=0.1.0

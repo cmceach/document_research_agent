@@ -103,22 +103,6 @@ for citation in result["citations"]:
     print(f"- {citation['filename']}, Page {citation['page']}: '{citation['text']}'")
 ```
 
-### Switching LLM Implementations
-
-The Document Research Agent supports two LLM implementations:
-1. The original OpenAI implementation
-2. The LangChain implementation with structured output
-
-Use the provided script to switch between implementations:
-
-```bash
-# Switch to the LangChain implementation
-./switch_llm_implementation.py langchain
-
-# Switch to the original OpenAI implementation
-./switch_llm_implementation.py openai
-```
-
 ### Check Collection Status
 
 ```bash
