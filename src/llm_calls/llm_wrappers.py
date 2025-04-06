@@ -11,6 +11,14 @@ from langchain_community.callbacks.manager import get_openai_callback
 
 # Import utility functions
 from src.llm_calls.utils import format_context, format_previous_queries, clean_query_results, truncate_context_for_tokens
+from src.llm_calls.prompts import (
+    SEARCH_QUERIES_SYSTEM_PROMPT,
+    SEARCH_QUERIES_USER_PROMPT,
+    GRADE_CONTEXT_SYSTEM_PROMPT,
+    GRADE_CONTEXT_USER_PROMPT,
+    FINAL_ANSWER_SYSTEM_PROMPT,
+    FINAL_ANSWER_USER_PROMPT
+)
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -163,7 +171,7 @@ class LLMWrappers:
         Generate search queries based on the original query and retrieved context.
         
         Args:
-            original_query: The user's original question
+            original_query: The user's original query
             retrieved_context: Previously retrieved context chunks
             previous_queries: Previously generated search queries
             generation_attempt: Current attempt number for generating queries
@@ -179,30 +187,15 @@ class LLMWrappers:
             formatted_context = format_context(retrieved_context)
             formatted_prev_queries = format_previous_queries(previous_queries)
             
-            # Create prompts
-            system_prompt = """You are a skilled researcher with the ability to formulate targeted search queries to find information in a document.
-Based on the original question and any previously retrieved context, generate specific and effective keyword search queries that will help find
-additional relevant information to answer the question comprehensively.
-
-Generate queries that:
-1. Break down complex questions into simpler, searchable components
-2. Use alternative phrasing or synonyms to increase chances of matches
-3. Focus on specific aspects of the question that need more context
-4. Are specific enough to find relevant information but not too narrow to miss important context"""
+            # Create messages using prompts from prompts.py
+            user_prompt = SEARCH_QUERIES_USER_PROMPT.format(
+                original_query=original_query,
+                formatted_prev_queries=formatted_prev_queries,
+                formatted_context=formatted_context,
+                generation_attempt=generation_attempt
+            )
             
-            user_prompt = f"""Original Question: {original_query}
-
-Previous Search Queries:
-{formatted_prev_queries}
-
-Context Retrieved So Far:
-{formatted_context}
-
-Based on the above, generate 2-3 effective search queries that will help find information to answer the original question.
-This is attempt #{generation_attempt} at generating queries."""
-            
-            # Create messages and invoke LLM with token tracking
-            messages = self._create_messages(system_prompt, user_prompt)
+            messages = self._create_messages(SEARCH_QUERIES_SYSTEM_PROMPT, user_prompt)
             
             # Track token usage
             with get_openai_callback() as cb:
@@ -250,35 +243,15 @@ This is attempt #{generation_attempt} at generating queries."""
             # Format the context for the prompt
             formatted_context = format_context(retrieved_context)
             
-            # Create prompts
-            system_prompt = """You are an expert research assistant evaluating if the retrieved context is sufficient to answer a question.
-Your job is to determine if:
-1. The context is sufficient to provide a complete and accurate answer (FINISH)
-2. More context is needed to properly answer the question (CONTINUE)
-3. The retrieval strategy needs to be adjusted (RETRY_GENERATION)
-4. We should give up because the information is likely not in the documents (FAIL)
-
-Guidelines:
-- Choose FINISH if all aspects of the question can be answered with the current context
-- Choose CONTINUE if some parts of the question remain unanswered but more retrieval may help
-- Choose RETRY_GENERATION if the current retrieval strategy isn't working well
-- Choose FAIL only if we've made multiple attempts and still have no relevant information"""
+            # Create messages using prompts from prompts.py
+            user_prompt = GRADE_CONTEXT_USER_PROMPT.format(
+                original_query=original_query,
+                iterations=iterations,
+                max_iterations=max_iterations,
+                formatted_context=formatted_context
+            )
             
-            user_prompt = f"""Original Question: {original_query}
-
-Current Iteration: {iterations} of {max_iterations}
-
-Retrieved Context:
-{formatted_context}
-
-Based on the above, determine if we should:
-- FINISH (context is sufficient to answer the question)
-- CONTINUE (need more context, continue retrieval)
-- RETRY_GENERATION (current strategy isn't working, try new queries)
-- FAIL (give up, information likely not in documents)"""
-            
-            # Create messages and invoke LLM
-            messages = self._create_messages(system_prompt, user_prompt)
+            messages = self._create_messages(GRADE_CONTEXT_SYSTEM_PROMPT, user_prompt)
             
             # Track token usage
             with get_openai_callback() as cb:
@@ -335,30 +308,13 @@ Based on the above, determine if we should:
             # Format for the prompt
             formatted_context = format_context(truncated_context)
             
-            # Create prompts
-            system_prompt = """You are a meticulous research assistant tasked with answering questions based on specific context provided.
-Your response should:
-1. Be comprehensive, accurate, and directly address the question
-2. Be based ONLY on the provided context - do not include outside knowledge
-3. Cite specific sources from the context that support your answer using the format [X] where X is the source number
-4. If the context doesn't contain enough information to answer the question, say so clearly
-
-For your citations:
-- Include exact quotes from the source text
-- Specify the page number and filename for each quote
-- Link each citation to a specific claim in your answer
-
-Be thorough, accurate, and comprehensive in your response."""
+            # Create messages using prompts from prompts.py
+            user_prompt = FINAL_ANSWER_USER_PROMPT.format(
+                original_query=original_query,
+                formatted_context=formatted_context
+            )
             
-            user_prompt = f"""Question: {original_query}
-
-Context:
-{formatted_context}
-
-Based ONLY on the context provided above, answer the question. Include relevant citations for each key point in your answer."""
-            
-            # Create messages and invoke LLM
-            messages = self._create_messages(system_prompt, user_prompt)
+            messages = self._create_messages(FINAL_ANSWER_SYSTEM_PROMPT, user_prompt)
             
             # Track token usage
             with get_openai_callback() as cb:
