@@ -107,18 +107,21 @@ def invoke_graph(graph: StateGraph, input_state: Dict[str, Any], config: Dict[st
         end_time = time.time()
         runtime_seconds = end_time - start_time
         
+        # Format runtime information
+        runtime_formatted = f"{runtime_seconds:.2f} seconds"
+        
         # Add runtime information to result
         result["runtime"] = {
             "start_time": start_datetime.isoformat(),
             "end_time": datetime.now().isoformat(),
-            "total_seconds": runtime_seconds,
-            "formatted": f"{runtime_seconds:.2f} seconds"
+            "runtime_seconds": runtime_seconds,
+            "runtime_formatted": runtime_formatted
         }
         
         # Print runtime summary
         print("\nWorkflow Execution Summary:")
         print(f"Started at: {result['runtime']['start_time']}")
         print(f"Completed at: {result['runtime']['end_time']}")
-        print(f"Total runtime: {result['runtime']['formatted']}")
+        print(f"Total runtime: {runtime_formatted}")
         
         return result 

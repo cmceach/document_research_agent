@@ -106,6 +106,15 @@ def print_result(result: Dict[str, Any], verbose: bool = False):
         print(f"- Completion tokens: {token_usage.get('completion_tokens', 0)}")
         print(f"- Total tokens: {token_usage.get('total_tokens', 0)}")
     
+    # Print runtime information if available
+    if "runtime" in result:
+        runtime = result["runtime"]
+        print("\nRUNTIME:")
+        print(f"- Start time: {runtime.get('start_time', 'unknown')}")
+        print(f"- End time: {runtime.get('end_time', 'unknown')}")
+        print(f"- Total runtime: {runtime.get('runtime_formatted', 'unknown')}")
+        print(f"- Total seconds: {runtime.get('runtime_seconds', 0):.2f}")
+    
     if verbose and "agent_scratchpad" in result:
         print("\n" + "="*80)
         print("AGENT REASONING (DEBUG):")

@@ -7,7 +7,7 @@ import os
 import logging
 from typing import Dict, List, Any, Optional, Set, Union
 
-from src.graph_builder import build_graph
+from src.graph_builder import build_graph, invoke_graph
 from src.retriever.chroma_retriever import ChromaRetriever
 from src.llm_calls.llm_wrappers import LLMWrappers
 
@@ -192,36 +192,37 @@ class DocumentResearchAgent:
             if filenames:
                 logger.info(f"Document filenames: {filenames}")
             
-            # Execute the graph
-            final_state = self.graph.invoke(input_state)
+            # Execute the graph using invoke_graph
+            final_state = invoke_graph(self.graph, input_state)
             
             # Get token usage information
             token_usage = self.get_token_usage()
-            logger.info(f"Token usage - Total: {token_usage['total_tokens']}, " 
+            logger.info(f"Token usage - Total: {token_usage['total_tokens']}, "
                        f"Prompt: {token_usage['prompt_tokens']}, "
                        f"Completion: {token_usage['completion_tokens']}")
             
-            # Format the output
+            # Prepare the result dictionary
             result = {
                 "success": True,
                 "final_answer": final_state.get("final_answer", "No answer generated"),
                 "citations": final_state.get("citations", []),
+                "token_usage": token_usage,
                 "iterations": final_state.get("iterations", 0),
-                "token_usage": token_usage
+                "runtime": final_state.get("runtime", {})
             }
             
-            # Include scratchpad if requested
+            # Include agent scratchpad if requested
             if include_scratchpad:
                 result["agent_scratchpad"] = final_state.get("agent_scratchpad", "")
             
             return result
-        
+            
         except Exception as e:
-            logger.error(f"Error executing Document Research Agent: {e}")
+            logger.error(f"Error running Document Research Agent: {e}", exc_info=True)
             return {
                 "success": False,
                 "error": str(e),
-                "final_answer": f"Error: {str(e)}",
+                "final_answer": "Error occurred during research",
                 "citations": [],
                 "token_usage": self.get_token_usage()
             } 
