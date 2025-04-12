@@ -1,19 +1,20 @@
 import os
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
-from openai import OpenAI
 import logging
-from tenacity import retry, wait_exponential, stop_after_attempt
+from src.llm_calls.utils import deduplicate_search_results
+from src.retriever.base_retriever import BaseRetriever
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class AzureSearchRetriever:
+class AzureSearchRetriever(BaseRetriever):
     """Azure AI Search retriever for hybrid search."""
     
     def __init__(self):
+        super().__init__()
         self.search_endpoint = os.environ.get("AZURE_SEARCH_SERVICE_ENDPOINT")
         self.index_name = os.environ.get("AZURE_SEARCH_INDEX_NAME")
         self.search_key = os.environ.get("AZURE_SEARCH_API_KEY")
@@ -21,45 +22,29 @@ class AzureSearchRetriever:
         self.embedding_model = os.environ.get("OPENAI_EMBEDDING_MODEL_NAME", "text-embedding-ada-002")
         
         # Initialize clients
-        self.search_client = self._init_search_client()
-        self.openai_client = self._init_openai_client()
+        self.search_client = None
+        self.openai_client = None
+        self._initialize_clients()
     
-    def _init_search_client(self) -> SearchClient:
-        """Initialize the Azure AI Search client."""
+    def _initialize_clients(self):
+        """Initialize all clients."""
         try:
             if not all([self.search_endpoint, self.index_name, self.search_key]):
                 raise ValueError("Azure Search configuration is incomplete")
             
+            # Initialize Azure Search client
             credential = AzureKeyCredential(self.search_key)
-            return SearchClient(endpoint=self.search_endpoint, 
-                              index_name=self.index_name, 
-                              credential=credential)
-        except Exception as e:
-            logger.error(f"Failed to initialize Azure Search client: {e}")
-            raise
-    
-    def _init_openai_client(self) -> OpenAI:
-        """Initialize the OpenAI client."""
-        try:
-            if not self.openai_api_key:
-                raise ValueError("OpenAI API key is missing")
-            
-            return OpenAI(api_key=self.openai_api_key)
-        except Exception as e:
-            logger.error(f"Failed to initialize OpenAI client: {e}")
-            raise
-    
-    @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3))
-    def generate_embeddings(self, text: str) -> List[float]:
-        """Generate embeddings for the given text using OpenAI."""
-        try:
-            response = self.openai_client.embeddings.create(
-                model=self.embedding_model,
-                input=text
+            self.search_client = SearchClient(
+                endpoint=self.search_endpoint,
+                index_name=self.index_name,
+                credential=credential
             )
-            return response.data[0].embedding
+            
+            # Initialize OpenAI client from base class
+            self.openai_client = self._init_openai_client()
+            
         except Exception as e:
-            logger.error(f"Error generating embeddings: {e}")
+            logger.error(f"Failed to initialize clients: {e}")
             raise
     
     def retrieve_context(self, search_queries: List[str], filenames: List[str], top_k: int = 5) -> List[Dict[str, Any]]:
@@ -107,18 +92,16 @@ class AzureSearchRetriever:
                     )
                     
                     # Process results
+                    query_results = []
                     for result in search_results:
-                        content = result["content"]
-                        # Skip if we've already seen this content
-                        if content in unique_contents:
-                            continue
-                            
-                        unique_contents.add(content)
-                        results.append({
-                            "text": content,
+                        query_results.append({
+                            "text": result["content"],
                             "page": result.get("page_number", 0),
                             "filename": result.get("filename", "unknown")
                         })
+                    
+                    # Deduplicate results
+                    results.extend(deduplicate_search_results(query_results, unique_contents))
                         
                 except Exception as e:
                     logger.error(f"Error during search for query '{query}': {e}")

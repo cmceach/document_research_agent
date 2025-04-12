@@ -6,15 +6,18 @@ from chromadb.config import Settings
 from openai import OpenAI
 import logging
 from tenacity import retry, wait_exponential, stop_after_attempt
+from src.llm_calls.utils import deduplicate_search_results
+from src.retriever.base_retriever import BaseRetriever
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class ChromaRetriever:
+class ChromaRetriever(BaseRetriever):
     """Chroma DB retriever for vector search."""
     
     def __init__(self, lazy_init=False):
+        super().__init__()
         self.chroma_db_path = os.environ.get("CHROMA_DB_PATH", "./chroma_db")
         self.collection_name = os.environ.get("CHROMA_COLLECTION_NAME", "document_chunks")
         self.openai_api_key = os.environ.get("OPENAI_API_KEY")
@@ -22,7 +25,6 @@ class ChromaRetriever:
         
         # Initialize clients, but allow lazy initialization for testing
         self.chroma_client = None
-        self.openai_client = None
         self.embedding_function = None
         self.collection = None
         
@@ -32,7 +34,6 @@ class ChromaRetriever:
     def _initialize_clients(self):
         """Initialize all clients - allows for delayed initialization in testing"""
         self.chroma_client = self._init_chroma_client()
-        self.openai_client = self._init_openai_client()
         self.embedding_function = self._init_embedding_function()
         self.collection = self._get_or_create_collection()
     
@@ -52,17 +53,6 @@ class ChromaRetriever:
             )
         except Exception as e:
             logger.error(f"Failed to initialize Chroma DB client: {e}")
-            raise
-    
-    def _init_openai_client(self) -> OpenAI:
-        """Initialize the OpenAI client."""
-        try:
-            if not self.openai_api_key:
-                raise ValueError("OpenAI API key is missing")
-            
-            return OpenAI(api_key=self.openai_api_key)
-        except Exception as e:
-            logger.error(f"Failed to initialize OpenAI client: {e}")
             raise
     
     def _init_embedding_function(self):
@@ -136,23 +126,25 @@ class ChromaRetriever:
             logger.error(f"Error generating embeddings: {e}")
             raise
     
-    def retrieve_context(self, 
-                         search_queries: List[str], 
-                         filenames: List[str], 
-                         top_k: int = 5) -> List[Dict[str, Any]]:
+    def batch_retrieve_context(self, 
+                             search_queries: List[str], 
+                             filenames: List[str], 
+                             top_k: int = 5,
+                             batch_size: int = 5) -> List[Dict[str, Any]]:
         """
-        Execute vector search on Chroma DB with the provided queries.
+        Execute vector search in batches for better performance.
         
         Args:
             search_queries: List of search queries to use
             filenames: List of filenames to filter by
             top_k: Number of results to retrieve per query
+            batch_size: Number of queries to process in each batch
             
         Returns:
-            List of dicts with context information {"text": str, "page": int, "filename": str}
+            List of dicts with context information
         """
         results = []
-        unique_contents = set()  # Track unique content to avoid duplicates
+        unique_contents = set()
         
         try:
             # Ensure client is initialized
@@ -167,7 +159,97 @@ class ChromaRetriever:
             if normalized_filenames:
                 where_filter = {"filename": {"$in": normalized_filenames}}
                 logger.info(f"Filtering results by filenames: {normalized_filenames}")
-                logger.debug(f"Using where filter: {where_filter}")
+            
+            # Process queries in batches
+            for i in range(0, len(search_queries), batch_size):
+                batch_queries = search_queries[i:i + batch_size]
+                logger.info(f"Processing batch of {len(batch_queries)} queries")
+                
+                try:
+                    # Execute vector search for the batch
+                    search_results = self.collection.query(
+                        query_texts=batch_queries,
+                        n_results=top_k,
+                        where=where_filter,
+                        include=["documents", "metadatas", "distances"]
+                    )
+                    
+                    # Process results for each query in the batch
+                    if search_results and search_results.get("documents"):
+                        for query_idx, documents in enumerate(search_results["documents"]):
+                            if not documents:
+                                continue
+                                
+                            # Extract results for this query
+                            query_results = []
+                            for doc_idx, document in enumerate(documents):
+                                metadata = search_results["metadatas"][query_idx][doc_idx] if search_results.get("metadatas") else {}
+                                
+                                # Extract page number
+                                page_number = 0
+                                if "page_number" in metadata:
+                                    try:
+                                        page_number = int(metadata["page_number"])
+                                    except (ValueError, TypeError):
+                                        page_number = 0
+                                
+                                query_results.append({
+                                    "text": document,
+                                    "page": page_number,
+                                    "filename": metadata.get("filename", "unknown")
+                                })
+                            
+                            # Deduplicate results for this query
+                            results.extend(deduplicate_search_results(query_results, unique_contents))
+                    
+                except Exception as e:
+                    logger.error(f"Error processing batch: {e}")
+                    continue
+            
+            logger.info(f"Retrieved {len(results)} unique context items across all batches")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error in batch_retrieve_context: {e}")
+            return []
+
+    def retrieve_context(self, 
+                        search_queries: List[str], 
+                        filenames: List[str], 
+                        top_k: int = 5) -> List[Dict[str, Any]]:
+        """
+        Execute vector search on Chroma DB with the provided queries.
+        Uses batch processing for better performance with multiple queries.
+        
+        Args:
+            search_queries: List of search queries to use
+            filenames: List of filenames to filter by
+            top_k: Number of results to retrieve per query
+            
+        Returns:
+            List of dicts with context information
+        """
+        # Use batch processing if we have multiple queries
+        if len(search_queries) > 1:
+            return self.batch_retrieve_context(search_queries, filenames, top_k)
+            
+        # For single queries, use the original implementation
+        results = []
+        unique_contents = set()
+        
+        try:
+            # Ensure client is initialized
+            if self.collection is None:
+                self._initialize_clients()
+                
+            # Normalize filenames to just basenames
+            normalized_filenames = self._normalize_filenames(filenames)
+            
+            # Create a filter for filenames if provided
+            where_filter = None
+            if normalized_filenames:
+                where_filter = {"filename": {"$in": normalized_filenames}}
+                logger.info(f"Filtering results by filenames: {normalized_filenames}")
             
             # Process each search query
             for query in search_queries:
@@ -197,11 +279,8 @@ class ChromaRetriever:
                                     logger.debug(f"Result {i+1}: Metadata={metadatas[0][i]}, Distance={distances[0][i]:.4f}")
                         
                         # Extract results into our consistent format
+                        query_results = []
                         for i, document in enumerate(search_results["documents"][0]):
-                            # Skip if we've already seen this content
-                            if document in unique_contents:
-                                continue
-                            
                             metadata = search_results["metadatas"][0][i] if search_results.get("metadatas") and search_results["metadatas"][0] else {}
                             
                             # Extract page number correctly, ensuring it's an integer
@@ -215,12 +294,14 @@ class ChromaRetriever:
                             # Get the filename from metadata
                             filename = metadata.get("filename", "unknown")
                             
-                            unique_contents.add(document)
-                            results.append({
+                            query_results.append({
                                 "text": document,
                                 "page": page_number,
                                 "filename": filename
                             })
+                            
+                        # Deduplicate results
+                        results.extend(deduplicate_search_results(query_results, unique_contents))
                     else:
                         logger.info(f"No results found for query: '{query}'")
                         
