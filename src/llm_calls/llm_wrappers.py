@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from langchain_community.callbacks.manager import get_openai_callback
 
 # Import utility functions
-from src.llm_calls.utils import format_context, format_previous_queries, clean_query_results, truncate_context_for_tokens
+from src.llm_calls.utils import format_context, format_previous_queries, clean_query_results, optimize_context_for_prompt
 from src.llm_calls.prompts import (
     SEARCH_QUERIES_SYSTEM_PROMPT,
     SEARCH_QUERIES_USER_PROMPT,
@@ -183,8 +183,8 @@ class LLMWrappers:
             # Create structured LLM
             structured_llm = self._get_structured_llm(SearchQueries)
             
-            # Format context and previous queries
-            formatted_context = format_context(retrieved_context)
+            # Format context and previous queries with token optimization
+            formatted_context = format_context(retrieved_context, max_items=8, max_chars=200)
             formatted_prev_queries = format_previous_queries(previous_queries)
             
             # Create messages using prompts from prompts.py
@@ -240,8 +240,8 @@ class LLMWrappers:
             # Create structured LLM
             structured_llm = self._get_structured_llm(ContextDecision)
             
-            # Format the context for the prompt
-            formatted_context = format_context(retrieved_context)
+            # Format the context for the prompt with token optimization
+            formatted_context = format_context(retrieved_context, max_items=10, max_chars=250)
             
             # Create messages using prompts from prompts.py
             user_prompt = GRADE_CONTEXT_USER_PROMPT.format(
@@ -299,14 +299,13 @@ class LLMWrappers:
             # Create structured LLM
             structured_llm = self._get_structured_llm(FinalAnswer)
             
-            # Format the context for the prompt
-            # First truncate if needed to fit within token limits
-            truncated_context = truncate_context_for_tokens(retrieved_context, max_items=15)
-            if len(truncated_context) < len(retrieved_context):
-                logger.warning(f"Context was truncated from {len(retrieved_context)} to {len(truncated_context)} items to fit within token limits")
+            # Optimize context to fit within token limits (target ~6000 tokens for context)
+            optimized_context = optimize_context_for_prompt(retrieved_context, target_tokens=6000)
+            if len(optimized_context) < len(retrieved_context):
+                logger.warning(f"Context was optimized from {len(retrieved_context)} to {len(optimized_context)} items to fit within token limits")
             
-            # Format for the prompt
-            formatted_context = format_context(truncated_context)
+            # Format for the prompt with optimized parameters
+            formatted_context = format_context(optimized_context, max_items=15, max_chars=400)
             
             # Create messages using prompts from prompts.py
             user_prompt = FINAL_ANSWER_USER_PROMPT.format(

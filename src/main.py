@@ -86,6 +86,20 @@ def print_result(result: Dict[str, Any], verbose: bool = False):
         if "iterations" in result:
             print(f"Iterations: {result['iterations']}")
     
+    # Print search queries by iteration
+    search_queries_by_iteration = result.get("search_queries_by_iteration", [])
+    if search_queries_by_iteration:
+        print("\nSEARCH QUERIES BY ITERATION:")
+        for query_info in search_queries_by_iteration:
+            iteration = query_info.get("iteration", "?")
+            attempt = query_info.get("attempt", "?")
+            queries = query_info.get("queries", [])
+            context_items = query_info.get("context_items_available", 0)
+            
+            print(f"\nIteration {iteration}.{attempt} (Context items available: {context_items}):")
+            for i, query in enumerate(queries, 1):
+                print(f"  {i}. \"{query}\"")
+    
     print("\nANSWER:")
     print(result.get("final_answer", "No answer generated"))
     

@@ -78,7 +78,10 @@ class ChromaRetriever(BaseRetriever):
                 metadata={"hnsw:space": "cosine"}  # Use cosine similarity
             )
             
-            logger.info(f"Successfully connected to collection '{self.collection_name}' with {collection.count()} documents")
+            # Only log if there are documents (reduce noise for empty collections)
+            doc_count = collection.count()
+            if doc_count > 0:
+                logger.info(f"Connected to collection '{self.collection_name}' with {doc_count} documents")
             return collection
             
         except Exception as e:
@@ -158,12 +161,12 @@ class ChromaRetriever(BaseRetriever):
             where_filter = None
             if normalized_filenames:
                 where_filter = {"filename": {"$in": normalized_filenames}}
-                logger.info(f"Filtering results by filenames: {normalized_filenames}")
+                logger.debug(f"Filtering results by filenames: {normalized_filenames}")
             
             # Process queries in batches
             for i in range(0, len(search_queries), batch_size):
                 batch_queries = search_queries[i:i + batch_size]
-                logger.info(f"Processing batch of {len(batch_queries)} queries")
+                logger.debug(f"Processing batch of {len(batch_queries)} queries")
                 
                 try:
                     # Execute vector search for the batch
@@ -206,7 +209,7 @@ class ChromaRetriever(BaseRetriever):
                     logger.error(f"Error processing batch: {e}")
                     continue
             
-            logger.info(f"Retrieved {len(results)} unique context items across all batches")
+            logger.debug(f"Retrieved {len(results)} unique context items across all batches")
             return results
             
         except Exception as e:
@@ -249,12 +252,12 @@ class ChromaRetriever(BaseRetriever):
             where_filter = None
             if normalized_filenames:
                 where_filter = {"filename": {"$in": normalized_filenames}}
-                logger.info(f"Filtering results by filenames: {normalized_filenames}")
+                logger.debug(f"Filtering results by filenames: {normalized_filenames}")
             
             # Process each search query
             for query in search_queries:
                 try:
-                    logger.info(f"Executing search for query: '{query}'")
+                    logger.debug(f"Executing search for query: '{query}'")
                     
                     # Execute vector search
                     search_results = self.collection.query(
@@ -267,16 +270,7 @@ class ChromaRetriever(BaseRetriever):
                     # Process results
                     if search_results and search_results.get("documents") and search_results["documents"][0]:
                         docs_count = len(search_results["documents"][0])
-                        logger.info(f"Retrieved {docs_count} results for query: '{query}'")
-                        
-                        # Log more details about the results if in debug mode
-                        if logger.isEnabledFor(logging.DEBUG) and docs_count > 0:
-                            metadatas = search_results.get("metadatas", [[]])
-                            distances = search_results.get("distances", [[]])
-                            
-                            if metadatas and metadatas[0] and distances and distances[0]:
-                                for i in range(min(docs_count, 3)):  # Log only up to 3 results to avoid overwhelming logs
-                                    logger.debug(f"Result {i+1}: Metadata={metadatas[0][i]}, Distance={distances[0][i]:.4f}")
+                        logger.debug(f"Retrieved {docs_count} results for query: '{query}'")
                         
                         # Extract results into our consistent format
                         query_results = []
@@ -303,20 +297,13 @@ class ChromaRetriever(BaseRetriever):
                         # Deduplicate results
                         results.extend(deduplicate_search_results(query_results, unique_contents))
                     else:
-                        logger.info(f"No results found for query: '{query}'")
+                        logger.debug(f"No results found for query: '{query}'")
                         
                 except Exception as e:
                     logger.error(f"Error during search for query '{query}': {e}")
                     continue
             
-            logger.info(f"Retrieved {len(results)} unique context items across all queries")
-            
-            # Log the first few results for debugging
-            if logger.isEnabledFor(logging.DEBUG) and results:
-                for i, result in enumerate(results[:2]):  # Just log first 2 to avoid verbose logs
-                    logger.debug(f"Context item {i+1}: Filename={result['filename']}, Page={result['page']}")
-                    logger.debug(f"Text sample: {result['text'][:100]}...")
-            
+            logger.debug(f"Retrieved {len(results)} unique context items across all queries")
             return results
             
         except Exception as e:

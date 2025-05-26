@@ -14,7 +14,7 @@ retriever = ChromaRetriever(lazy_init=True)
 
 def start_node_func(state: AgentState) -> Dict[str, Any]:
     """Initialize the agent state with default values."""
-    logger.info(f"Starting agent with query: {state['original_query']}")
+    logger.info(f"🚀 Starting research: '{state['original_query']}'")
     
     # Return state delta with initial values
     return {
@@ -23,6 +23,7 @@ def start_node_func(state: AgentState) -> Dict[str, Any]:
         "generation_attempts": 0,
         "max_generation_attempts": 3,
         "search_queries": [],
+        "search_queries_by_iteration": [],
         "retrieved_context": [],
         "agent_scratchpad": "",
         "final_answer": None,
@@ -32,31 +33,44 @@ def start_node_func(state: AgentState) -> Dict[str, Any]:
 
 def generate_search_queries_node_func(state: AgentState) -> Dict[str, Any]:
     """Generate search queries based on the original query and current context."""
-    logger.info(f"Generating search queries. Iteration: {state['iterations']}, Generation attempt: {state['generation_attempts']}")
+    iteration = state['iterations']
+    attempt = state['generation_attempts'] + 1
     
     # Generate search queries using the agent's LLM wrapper
     queries = state["llm_wrapper"].generate_search_queries_llm(
         original_query=state["original_query"],
         retrieved_context=state["retrieved_context"],
         previous_queries=state["search_queries"],
-        generation_attempt=state["generation_attempts"] + 1
+        generation_attempt=attempt
     )
+    
+    # Log the search queries concisely
+    logger.info(f"📝 Step {iteration + 1}.{attempt} - Generated queries: {', '.join(f'"{q}"' for q in queries)}")
+    
+    # Track queries for this iteration
+    iteration_queries = {
+        "iteration": iteration + 1,
+        "attempt": attempt,
+        "queries": queries,
+        "context_items_available": len(state["retrieved_context"])
+    }
     
     # Update the scratchpad
     scratchpad = state.get("agent_scratchpad", "")
-    scratchpad += f"\n\nGenerated search queries (attempt {state['generation_attempts'] + 1}):\n"
+    scratchpad += f"\n\nGenerated search queries (attempt {attempt}):\n"
     scratchpad += "\n".join([f"- {q}" for q in queries])
     
     # Return state delta
     return {
         "search_queries": queries,
-        "generation_attempts": state["generation_attempts"] + 1,
+        "search_queries_by_iteration": [iteration_queries],  # Will be appended due to annotation
+        "generation_attempts": attempt,
         "agent_scratchpad": scratchpad
     }
 
 def retrieve_context_node_func(state: AgentState) -> Dict[str, Any]:
     """Retrieve context from Chroma DB using the generated queries."""
-    logger.info(f"Retrieving context. Iteration: {state['iterations']}")
+    iteration = state['iterations'] + 1
     
     # Execute search queries
     new_context = retriever.retrieve_context(
@@ -64,9 +78,12 @@ def retrieve_context_node_func(state: AgentState) -> Dict[str, Any]:
         filenames=state["filenames"]
     )
     
+    # Log retrieval results concisely
+    logger.info(f"🔍 Step {iteration} - Retrieved {len(new_context)} context items")
+    
     # Update the scratchpad
     scratchpad = state.get("agent_scratchpad", "")
-    scratchpad += f"\n\nRetrieved {len(new_context)} new context items in iteration {state['iterations'] + 1}:\n"
+    scratchpad += f"\n\nRetrieved {len(new_context)} new context items in iteration {iteration}:\n"
     
     if new_context:
         for i, item in enumerate(new_context):
@@ -79,21 +96,25 @@ def retrieve_context_node_func(state: AgentState) -> Dict[str, Any]:
     # and it will be appended to the existing list
     return {
         "retrieved_context": new_context,  # Now appended due to annotation in state
-        "iterations": state["iterations"] + 1,
+        "iterations": iteration,
         "agent_scratchpad": scratchpad
     }
 
 def grade_context_node_func(state: AgentState) -> Dict[str, Any]:
     """Evaluate if the context is sufficient to answer the query."""
-    logger.info(f"Grading context. Iteration: {state['iterations']}")
+    iteration = state['iterations']
     
     # Grade the context using the agent's LLM wrapper
     decision = state["llm_wrapper"].grade_context_llm(
         original_query=state["original_query"],
         retrieved_context=state["retrieved_context"],
-        iterations=state["iterations"],
+        iterations=iteration,
         max_iterations=state["max_iterations"]
     )
+    
+    # Log decision concisely
+    total_context = len(state["retrieved_context"])
+    logger.info(f"⚖️  Step {iteration} - Decision: {decision} (Total context: {total_context} items)")
     
     # Update the scratchpad
     scratchpad = state.get("agent_scratchpad", "")
@@ -114,7 +135,8 @@ def grade_context_node_func(state: AgentState) -> Dict[str, Any]:
 
 def generate_final_answer_node_func(state: AgentState) -> Dict[str, Any]:
     """Generate the final answer based on the retrieved context."""
-    logger.info("Generating final answer")
+    total_context = len(state["retrieved_context"])
+    logger.info(f"✅ Generating final answer from {total_context} context items")
     
     # Generate the answer using the agent's LLM wrapper
     answer, citations = state["llm_wrapper"].generate_final_answer_llm(
@@ -136,7 +158,7 @@ def generate_final_answer_node_func(state: AgentState) -> Dict[str, Any]:
 
 def handle_failure_node_func(state: AgentState) -> Dict[str, Any]:
     """Handle the case where no relevant information was found."""
-    logger.info("Handling failure case - no relevant information found")
+    logger.info("❌ No relevant information found - returning failure response")
     
     # Set default failure response
     answer = "Information not found in provided documents"

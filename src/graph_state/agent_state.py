@@ -18,7 +18,7 @@ class AgentState(TypedDict):
     
     # Context management
     search_queries: List[str]
-    # Using Annotated with operator.add for lists that should be appended to, not replaced
+    search_queries_by_iteration: Annotated[List[Dict[str, Any]], operator.add]  # Track queries per iteration
     retrieved_context: Annotated[List[Dict[str, Any]], operator.add]  # List of {"text": str, "page": int, "filename": str}
     
     # Agent's working memory

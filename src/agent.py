@@ -53,7 +53,7 @@ class DocumentResearchAgent:
             self.retriever = ChromaRetriever()
             self.llm_wrappers = LLMWrappers()
             self.graph = build_graph()
-            logger.info("Successfully initialized agent components")
+            logger.debug("Successfully initialized agent components")
             
         except Exception as e:
             logger.error(f"Error initializing agent components: {e}")
@@ -105,7 +105,7 @@ class DocumentResearchAgent:
                 else:
                     result["filenames_found"] = True
             
-            logger.info(f"Collection check completed: {stats['document_count']} total documents")
+            logger.debug(f"Collection check completed: {stats['document_count']} total documents")
             return result
                 
         except Exception as e:
@@ -182,7 +182,7 @@ class DocumentResearchAgent:
             
             logger.info(f"Starting research with query: {query}")
             if filenames:
-                logger.info(f"Document filenames: {filenames}")
+                logger.debug(f"Document filenames: {filenames}")
             
             # Execute the graph using invoke_graph
             final_state = invoke_graph(self.graph, input_state)
@@ -198,6 +198,7 @@ class DocumentResearchAgent:
                 "success": True,
                 "final_answer": final_state.get("final_answer", "No answer generated"),
                 "citations": final_state.get("citations", []),
+                "search_queries_by_iteration": final_state.get("search_queries_by_iteration", []),
                 "token_usage": token_usage,
                 "iterations": final_state.get("iterations", 0),
                 "runtime": final_state.get("runtime", {})
