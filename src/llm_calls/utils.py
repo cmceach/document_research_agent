@@ -114,4 +114,26 @@ def estimate_token_count(text: str) -> int:
         Estimated token count
     """
     # Very rough approximation: 1 token ≈ 4 characters for English text
-    return len(text) // 4 
+    return len(text) // 4
+
+def deduplicate_search_results(results: List[Dict[str, Any]], existing_contents: Optional[set] = None) -> List[Dict[str, Any]]:
+    """
+    Deduplicate search results based on content.
+    
+    Args:
+        results: List of search result dictionaries
+        existing_contents: Optional set of already seen content
+        
+    Returns:
+        List of deduplicated search results
+    """
+    unique_contents = existing_contents or set()
+    deduplicated_results = []
+    
+    for result in results:
+        content = result.get("text", "")
+        if content and content not in unique_contents:
+            unique_contents.add(content)
+            deduplicated_results.append(result)
+            
+    return deduplicated_results 

@@ -10,6 +10,7 @@ from typing import Dict, List, Any, Optional, Set, Union
 from src.graph_builder import build_graph, invoke_graph
 from src.retriever.chroma_retriever import ChromaRetriever
 from src.llm_calls.llm_wrappers import LLMWrappers
+from src.utils.env_utils import check_required_env_vars
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -17,55 +18,46 @@ logger = logging.getLogger(__name__)
 class DocumentResearchAgent:
     """A document research agent that can retrieve information from documents based on a query."""
     
-    # Define required environment variables
-    REQUIRED_ENV_VARS: Set[str] = {
+    # Required environment variables
+    REQUIRED_ENV_VARS = [
         "OPENAI_API_KEY",
         "CHROMA_DB_PATH",
-        "CHROMA_COLLECTION_NAME",
-        "OPENAI_EMBEDDING_MODEL_NAME"
-    }
+        "CHROMA_COLLECTION_NAME"
+    ]
     
-    def __init__(self, check_environment: bool = True):
+    def __init__(self, lazy_init: bool = False):
         """
         Initialize the Document Research Agent.
         
         Args:
-            check_environment: Whether to check environment variables on initialization
+            lazy_init: Whether to delay initialization of components
         """
-        # Check environment if requested
-        if check_environment and not self._check_environment():
-            logger.warning("Continuing with initialization despite missing environment variables")
+        # Check environment variables first
+        if not check_required_env_vars(self.REQUIRED_ENV_VARS):
+            raise EnvironmentError("Missing required environment variables")
+            
+        # Initialize components
+        self.retriever = None
+        self.llm_wrappers = None
         
-        # Build the graph
-        try:
-            self.graph = build_graph()
-            logger.debug("Successfully built agent graph")
-        except Exception as e:
-            logger.error(f"Failed to build agent graph: {e}")
-            raise RuntimeError(f"Failed to initialize Document Research Agent: {e}")
-        
-        # Initialize retriever with lazy initialization
-        self.retriever = ChromaRetriever(lazy_init=True)
-        
-        # Get reference to LLM wrappers for token tracking
-        self.llm_wrapper = LLMWrappers(lazy_init=True)
+        if not lazy_init:
+            self._initialize_components()
     
-    def _check_environment(self) -> bool:
-        """
-        Check if all required environment variables are set.
-        
-        Returns:
-            Boolean indicating whether all required environment variables are set
-        """
-        missing = [var for var in self.REQUIRED_ENV_VARS if not os.environ.get(var)]
-        
-        if missing:
-            logger.error(f"Missing required environment variables: {', '.join(missing)}")
-            logger.error("Please set these variables in your .env file or environment.")
-            return False
-        
-        logger.debug("All required environment variables are set")
-        return True
+    def _initialize_components(self):
+        """Initialize the retriever and LLM wrapper components."""
+        try:
+            from src.retriever.chroma_retriever import ChromaRetriever
+            from src.llm_calls.llm_wrappers import LLMWrappers
+            from src.graph_builder import build_graph
+            
+            self.retriever = ChromaRetriever()
+            self.llm_wrappers = LLMWrappers()
+            self.graph = build_graph()
+            logger.info("Successfully initialized agent components")
+            
+        except Exception as e:
+            logger.error(f"Error initializing agent components: {e}")
+            raise
     
     def check_collection_status(self, filenames: Optional[List[str]] = None) -> Dict[str, Any]:
         """
@@ -132,11 +124,11 @@ class DocumentResearchAgent:
         Returns:
             Dictionary with token usage information
         """
-        return self.llm_wrapper.get_token_usage()
+        return self.llm_wrappers.get_token_usage()
     
     def reset_token_usage(self) -> None:
         """Reset the token usage counters to zero"""
-        self.llm_wrapper.reset_token_usage()
+        self.llm_wrappers.reset_token_usage()
     
     def run(
         self, 
@@ -178,7 +170,7 @@ class DocumentResearchAgent:
             input_state = {
                 "original_query": query,
                 "filenames": filenames or [],
-                "llm_wrapper": self.llm_wrapper  # Add LLMWrappers instance to state
+                "llm_wrapper": self.llm_wrappers  # Add LLMWrappers instance to state
             }
             
             # Add optional max_iterations if provided

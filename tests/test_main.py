@@ -6,58 +6,15 @@ import os
 import sys
 import argparse
 from unittest.mock import patch, MagicMock
-from src.main import check_collection_status, parse_arguments, main
+from src.main import parse_arguments, main, check_document_availability, print_result
 
-# Test collection status check
-@patch('src.main.ChromaRetriever')
-def test_check_collection_status(mock_retriever_class):
-    """Test the check_collection_status function."""
-    # Setup mock
-    mock_retriever = MagicMock()
-    mock_retriever_class.return_value = mock_retriever
-    
-    # Set up method returns for a direct path to success
-    mock_retriever.get_collection_stats.return_value = {
-        "collection_name": "test_collection",
-        "document_count": 100,
-        "embedding_model": "text-embedding-ada-002"
-    }
-    
-    mock_retriever.retrieve_context.return_value = [
-        {"text": "test document", "page": 1, "filename": "test.pdf"}
-    ]
-    
-    # Call function with test files
-    filenames = ["test.pdf", "other.pdf"]
-    result = check_collection_status(filenames)
-    
-    # Assert result
-    assert result is True, "check_collection_status should return True for a valid collection"
-
-# Test collection status check with empty collection
-@patch('src.main.ChromaRetriever')
-def test_check_collection_status_empty(mock_retriever_class):
-    """Test the check_collection_status function with an empty collection."""
-    # Setup mock
-    mock_retriever = MagicMock()
-    mock_retriever_class.return_value = mock_retriever
-    
-    # Set up method returns for the empty collection path
-    mock_retriever.get_collection_stats.return_value = {
-        "collection_name": "test_collection",
-        "document_count": 0,
-        "embedding_model": "text-embedding-ada-002"
-    }
-    
-    # Mock empty retrieve_context
-    mock_retriever.retrieve_context.return_value = []
-    
-    # Call function with test files
-    filenames = ["test.pdf"]
-    result = check_collection_status(filenames)
-    
-    # Assert result
-    assert result is False, "check_collection_status should return False for an empty collection"
+# Test document availability check
+def test_check_document_availability():
+    """Test the check_document_availability function."""
+    # Test with non-existent files
+    filenames = ["nonexistent1.pdf", "nonexistent2.pdf"]
+    result = check_document_availability(filenames)
+    assert result is False, "check_document_availability should return False for non-existent files"
 
 # Test argument parsing
 def test_parse_arguments():
@@ -79,36 +36,57 @@ def test_parse_arguments():
         assert args.filenames == ["file1.pdf"]
         assert args.check_collection is True
 
-# Test main function
-@patch('src.main.check_collection_status')
-@patch('src.main.build_graph')
+# Test print_result function
+def test_print_result():
+    """Test the print_result function."""
+    result = {
+        "success": True,
+        "final_answer": "Test answer",
+        "citations": [
+            {"filename": "test.pdf", "page": 1, "text": "Test citation"}
+        ],
+        "iterations": 2
+    }
+    
+    # Test that print_result doesn't raise an exception
+    with patch('builtins.print'):
+        print_result(result, verbose=False)
+        print_result(result, verbose=True)
+
+# Test main function with check collection
+@patch('src.main.DocumentResearchAgent')
 @patch('src.main.parse_arguments')
-def test_main_with_check_collection(mock_parse_args, mock_build_graph, mock_check_collection):
+def test_main_with_check_collection(mock_parse_args, mock_agent_class):
     """Test the main function with check_collection flag."""
     # Setup mock args
     mock_args = MagicMock()
     mock_args.check_collection = True
     mock_args.query = "test query"
     mock_args.filenames = ["file1.pdf"]
+    mock_args.debug_retrieval = False
     mock_parse_args.return_value = mock_args
     
-    # Mock check_collection to return True (success)
-    mock_check_collection.return_value = True
+    # Setup mock agent
+    mock_agent = MagicMock()
+    mock_agent_class.return_value = mock_agent
+    mock_agent.check_collection_status.return_value = {
+        "success": True,
+        "document_count": 10
+    }
     
     # Call main
-    main()
+    with patch('builtins.print'):
+        result = main()
     
     # Assert calls
     mock_parse_args.assert_called_once()
-    mock_check_collection.assert_called_once_with(["file1.pdf"])
-    # Verify build_graph is not called when check_collection is True
-    mock_build_graph.assert_not_called()
+    mock_agent.check_collection_status.assert_called_once_with(["file1.pdf"])
+    assert result == 0
 
-@patch('src.main.check_collection_status')
-@patch('src.main.build_graph')
+# Test main function normal run
+@patch('src.main.DocumentResearchAgent')
 @patch('src.main.parse_arguments')
-@patch('src.llm_calls.llm_wrappers.LLMWrappers')
-def test_main_normal_run(mock_llm_wrappers, mock_parse_args, mock_build_graph, mock_check_collection):
+def test_main_normal_run(mock_parse_args, mock_agent_class):
     """Test the main function for normal agent execution."""
     # Setup mock args
     mock_args = MagicMock()
@@ -117,35 +95,30 @@ def test_main_normal_run(mock_llm_wrappers, mock_parse_args, mock_build_graph, m
     mock_args.filenames = ["file1.pdf"]
     mock_args.verbose = True
     mock_args.output = None
+    mock_args.debug_retrieval = False
+    mock_args.max_iterations = None
     mock_parse_args.return_value = mock_args
     
-    # Mock LLMWrappers
-    mock_llm = MagicMock()
-    mock_llm_wrappers.return_value = mock_llm
-    
-    # Mock graph
-    mock_graph = MagicMock()
-    mock_build_graph.return_value = mock_graph
-    mock_graph.invoke.return_value = {
+    # Setup mock agent
+    mock_agent = MagicMock()
+    mock_agent_class.return_value = mock_agent
+    mock_agent.run.return_value = {
+        "success": True,
         "final_answer": "42",
         "citations": []
     }
     
     # Call main with mocked print
     with patch('builtins.print'):
-        main()
+        with patch('src.main.check_document_availability', return_value=True):
+            result = main()
     
     # Assert calls
     mock_parse_args.assert_called_once()
-    mock_check_collection.assert_not_called()
-    mock_build_graph.assert_called_once()
-    
-    # Verify graph was called with correct state including llm_wrapper
-    mock_graph.invoke.assert_called_once()
-    call_args = mock_graph.invoke.call_args[0][0]
-    assert "original_query" in call_args
-    assert "filenames" in call_args
-    assert "llm_wrapper" in call_args
-    assert call_args["original_query"] == "test query"
-    assert call_args["filenames"] == ["file1.pdf"]
-    assert call_args["llm_wrapper"] == mock_llm 
+    mock_agent.run.assert_called_once_with(
+        query="test query",
+        filenames=["file1.pdf"],
+        max_iterations=None,
+        include_scratchpad=True
+    )
+    assert result == 0 

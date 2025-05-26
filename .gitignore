@@ -36,6 +36,7 @@ ENV/
 chroma_db/
 *.xlsx
 document_research_report_*.md
+CONCISENESS_PLAN.md
 
 # Logs
 *.log
