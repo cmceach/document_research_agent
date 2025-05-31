@@ -43,6 +43,19 @@ print(result["final_answer"])
 python -m src.main "What are the payment terms?" --filenames contract.pdf
 ```
 
+### Running the FastAPI Server
+
+To start the FastAPI server, run the following command from the project root:
+
+```bash
+python -m src.main --serve --host <your_host> --port <your_port>
+```
+For example, to run on localhost, port 8000:
+```bash
+python -m src.main --serve --host 0.0.0.0 --port 8000
+```
+This will make the API accessible, typically at `http://<your_host>:<your_port>`. The `/research` endpoint will be available for POST requests. Refer to `docs/API.md` for more details on the API.
+
 ### Python API
 ```python
 # Basic usage

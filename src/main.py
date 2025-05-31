@@ -21,23 +21,27 @@ logger = logging.getLogger(__name__)
 
 def parse_arguments():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description='Document Research Agent')
+    parser = argparse.ArgumentParser(description='Document Research Agent or FastAPI Server')
     
-    parser.add_argument(
+    # Arguments for running as a command-line tool
+    tool_group = parser.add_argument_group('Command-line Tool Options')
+    tool_group.add_argument(
         'query',
         type=str,
-        help='The question to research in the documents'
+        nargs='?', # Make query optional if --serve is used
+        default=None, # Default to None if not provided
+        help='The question to research in the documents (required if not using --serve)'
     )
     
-    parser.add_argument(
+    tool_group.add_argument(
         '--filenames',
         type=str,
         nargs='+',
-        required=True,
-        help='List of document filenames to search within'
+        # required=True, # No longer always required
+        help='List of document filenames to search within (required if not using --serve)'
     )
     
-    parser.add_argument(
+    tool_group.add_argument(
         '--output',
         type=str,
         default=None,
@@ -68,8 +72,34 @@ def parse_arguments():
         action='store_true',
         help='Enable detailed debugging for document retrieval'
     )
+
+    # Argument for running as a FastAPI server
+    server_group = parser.add_argument_group('FastAPI Server Options')
+    server_group.add_argument(
+        '--serve',
+        action='store_true',
+        help='Run the FastAPI server'
+    )
+    server_group.add_argument(
+        '--host',
+        type=str,
+        default="0.0.0.0",
+        help='Host for the FastAPI server (default: 0.0.0.0)'
+    )
+    server_group.add_argument(
+        '--port',
+        type=int,
+        default=8000,
+        help='Port for the FastAPI server (default: 8000)'
+    )
     
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    # Validate arguments: query and filenames are required if --serve is not used
+    if not args.serve and (args.query is None or args.filenames is None):
+        parser.error("the following arguments are required when not using --serve: query, --filenames")
+
+    return args
 
 def print_result(result: Dict[str, Any], verbose: bool = False):
     """Pretty print the result to the console."""
@@ -164,22 +194,44 @@ def main():
     """Main entry point for the Document Research Agent."""
     # Parse command line arguments
     args = parse_arguments()
-    
+
+    if args.serve:
+        try:
+            import uvicorn
+            from src.api import app  # Import the FastAPI app
+            logger.info(f"Starting FastAPI server on {args.host}:{args.port}")
+            uvicorn.run(app, host=args.host, port=args.port)
+            return 0 # Should not be reached if uvicorn runs successfully
+        except ImportError:
+            logger.error("uvicorn is not installed. Please install it with `pip install uvicorn` to use --serve.")
+            return 1
+        except Exception as e:
+            logger.error(f"Failed to start FastAPI server: {e}", exc_info=True)
+            return 1
+
+    # Original command-line tool logic starts here
+    if args.query is None or args.filenames is None:
+        logger.error("Query and filenames must be provided when not running the server.")
+        # parse_arguments already handles this, but as a safeguard:
+        return 1
+
     # Enable debug logging for document retrieval if requested
     if args.debug_retrieval:
         logging.getLogger('src.retriever').setLevel(logging.DEBUG)
         logger.info("Document retrieval debugging enabled")
     
     try:
-        # Check if documents exist
-        if not check_document_availability(args.filenames):
+        # Check if documents exist - only if filenames are provided
+        if args.filenames and not check_document_availability(args.filenames):
             logger.warning("Some specified documents were not found. Results may be affected.")
         
-        # Initialize the agent
-        agent = DocumentResearchAgent()
-        
-        # Check collection status if requested
+        # Initialize the agent - only if query and filenames are provided for CLI mode
+        agent = DocumentResearchAgent() # This will be initialized only if not serving
+
         if args.check_collection:
+            if not args.filenames:
+                logger.error("--check-collection requires --filenames to be specified.")
+                return 1
             logger.info("Checking Chroma DB collection status...")
             status = agent.check_collection_status(args.filenames)
             
@@ -189,7 +241,7 @@ def main():
                 if status.get("filenames_found") is not None:
                     print(f"- Specified filenames found: {'Yes' if status['filenames_found'] else 'No'}")
                 logger.info("Collection check completed successfully.")
-                return 0
+                return 0 # Exit after checking collection
             else:
                 print("\nCollection check failed:")
                 print(f"- Error: {status.get('error', 'Unknown error')}")
@@ -197,29 +249,37 @@ def main():
                 if status.get("filenames_found") is not None:
                     print(f"- Specified filenames found: {'Yes' if status['filenames_found'] else 'No'}")
                 logger.error("Collection check failed.")
-                return 1
+                return 1 # Exit after checking collection
         
-        # Run the agent
-        logger.info(f"Starting research with query: {args.query}")
-        result = agent.run(
-            query=args.query,
-            filenames=args.filenames,
-            max_iterations=args.max_iterations,
-            include_scratchpad=args.verbose
-        )
+        # Proceed to run the agent only if not serving and not just checking collection
+        if args.query and args.filenames: # Ensure query and filenames are present for CLI run
+            logger.info(f"Starting research with query: {args.query}")
+            result = agent.run(
+                query=args.query,
+                filenames=args.filenames,
+                max_iterations=args.max_iterations,
+                include_scratchpad=args.verbose
+            )
+
+            # Print the result
+            print_result(result, args.verbose)
+
+            # Save to file if requested
+            if args.output:
+                save_to_file(result, args.output)
+
+            # Return appropriate exit code
+            return 0 if result.get("success", False) else 1
+        elif not args.serve: # If not serving and query/filenames are missing (should be caught by parser)
+            logger.error("Query and filenames are required for command-line execution.")
+            return 1
         
-        # Print the result
-        print_result(result, args.verbose)
-        
-        # Save to file if requested
-        if args.output:
-            save_to_file(result, args.output)
-        
-        # Return appropriate exit code
-        return 0 if result.get("success", False) else 1
-    
+        return 0 # Default exit for non-error cases not explicitly handled (e.g. if --serve was not set but no other action)
+
     except Exception as e:
-        logger.error(f"Error running Document Research Agent: {e}", exc_info=True)
+        # Avoid logging "NoneType object has no attribute 'filenames'" if --serve was used
+        if not args.serve:
+            logger.error(f"Error running Document Research Agent: {e}", exc_info=True)
         return 1
 
 if __name__ == "__main__":

@@ -236,4 +236,83 @@ retriever = ChromaRetriever()
 
 - **Limit iterations**: Use `max_iterations=3` for faster responses
 - **Cache results**: Store frequently accessed answers
-- **Batch queries**: Group related questions for efficiency 
+- **Batch queries**: Group related questions for efficiency
+
+# FastAPI Server Endpoints
+
+This section documents the HTTP endpoints provided by the FastAPI server.
+
+## POST /research
+
+This endpoint allows you to perform research based on a query and optional filenames using the Document Research Agent.
+
+**Request Body:**
+
+A JSON object with the following fields:
+
+*   `query` (string, required): The research query or question.
+*   `filenames` (list of strings, optional): A list of filenames to focus the research on. If omitted, the agent's behavior regarding document selection will depend on its default implementation (e.g., it might use a pre-configured set or all available documents it knows about).
+
+**Example Request:**
+
+```json
+{
+    "query": "What are the latest advancements in AI?",
+    "filenames": ["paper1.pdf", "article_about_ai.txt"]
+}
+```
+
+**Success Response (200 OK):**
+
+The response from the research agent. The structure of this response is determined by the `DocumentResearchAgent`'s `run` method. Typically, it's a JSON object containing the answer and citations.
+
+**Example Success Response:**
+
+```json
+{
+    "response": {
+        "success": true,
+        "final_answer": "The latest advancements in AI include large language models and generative adversarial networks...",
+        "citations": [
+            {
+                "text": "Large language models have shown significant improvements...",
+                "page": 1,
+                "filename": "paper1.pdf"
+            }
+        ],
+        "iterations": 3,
+        "search_queries_by_iteration": [
+            {
+                "iteration": 1,
+                "attempt": 1,
+                "queries": ["latest advancements in AI"],
+                "context_items_available": 10
+            }
+        ],
+        "token_usage": {"prompt_tokens": 1200, "completion_tokens": 300, "total_tokens": 1500},
+        "runtime": {"runtime_seconds": 25.5, "runtime_formatted": "0:00:25.500"}
+    }
+}
+```
+*(Note: The exact fields within the "response" object will match the output of the `DocumentResearchAgent.run` method, which might evolve. Refer to the agent's documentation for the most up-to-date details on its output structure.)*
+
+**Error Responses:**
+
+*   **422 Unprocessable Entity:** If the request body is invalid (e.g., missing `query`). The response will contain details about the validation error.
+    ```json
+    {
+        "detail": [
+            {
+                "loc": ["body", "query"],
+                "msg": "field required",
+                "type": "value_error.missing"
+            }
+        ]
+    }
+    ```
+*   **500 Internal Server Error:** If an unexpected error occurs during processing on the server.
+    ```json
+    {
+        "detail": "An error occurred during the research process."
+    }
+    ```
